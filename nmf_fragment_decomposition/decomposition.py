@@ -5,6 +5,9 @@ import numbers
 from collections import defaultdict
 import warnings
 import time
+import base64 
+import pickle
+import tempfile
 import logging 
 
 import numpy as np 
@@ -212,7 +215,7 @@ class RandomizedSearchReconstructionCV(BaseSearchCV):
             all_out = []
             all_more_results = defaultdict(list)
 
-            def evaluate_candidates(candidate_params: ParameterSampler, more_results: Optional[Dict[str, Any]] = None) -> None:
+            def evaluate_candidates(candidate_params: ParameterSampler, more_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
                 """ """
                 candidate_params = list(candidate_params)
                 n_candidates = len(candidate_params)
@@ -300,7 +303,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
 
     def _run_search(self, evaluate_candidates: Callable):
         """ """
-        evaluate_candidates(self.param_sampling, self.n_iter, random_state=self.random_state)
+        evaluate_candidates(self.param_sampling)
 
     def fit(self, X: Union[List[Any], np.ndarray], y=None, **params: Dict[str, Any]) -> "RandomizedSearchReconstructionCV":
         """ """
@@ -309,10 +312,15 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
         n_splits = self.estimator.n_splits
 
         results = {}
-            
-        def evaluate_candidates(candidate_params: Dict[str, Tuple[Any]], more_results: Optional[Dict[str, Any]] = None) -> None:
+        best_trials = []
+        
+        all_more_results = defaultdict(list)
+
+        def evaluate_candidates(
+            candidate_params: Dict[str, Tuple[Any]], 
+            more_results: Optional[Dict[str, Any]] = None, 
+        ) -> Dict[str, Any]:
             """ """
-            n_candidates = len(candidate_params.keys())
 
             def objective(trial: optuna.Trial):
                 """ """
@@ -332,40 +340,45 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                     params,
                 )
 
-                for k, v in results[0].items():
-                    if isinstance(v, (int, float)):
-                        trial.set_user_attr(
-                            k, np.array([r[k] for r in results])
-                        )
-                    elif k in ('train_scores', 'test_scores') and isinstance(v, dict):
-                        for sk, _ in v.items():
-                            trial.set_user_attr(
-                                f'{k}_{sk}', np.array([r[k][sk] for r in results])
-                            )
-                    
+                trial.set_user_attr('out', base64.b64encode(pickle.dumps(results)).decode("utf-8"))
+
                 try:
-                    return tuple([-1.*np.nanmean([r['test_score'][k] for r in results]) for k in self.objective_params])
+                    return tuple([np.nanmean([r['test_scores'][k] for r in results]) for k in self.objective_params])
                 except:
                     logger.info('Only one objective defined.')
 
-                return -1.*np.nanmean([r['test_score'] for r in results])
+                return np.nanmean([r['test_scores'] for r in results])
 
-            study = optuna.create_study(directions=['maximize' for _ in self.objective_params])
-            study.optimize(objective, n_trials=self.n_iter, n_jobs=self.n_jobs)
+            def optimize_optuna_study(study_name: str, storage_string: str, objective: Callable, n_trials: int) -> None:
+                """ """
+                study = optuna.create_study(study_name=study_name, storage=storage_string, load_if_exists=True)
+                study.optimize(objective, n_trials=n_trials)
 
-            out = [t.user_attrs for t in study.trials]
-            for i, (t, o) in enumerate(zip(study.trials, out)):
-                o.update(
-                    t
-                )
+            with tempfile.NamedTemporaryFile(suffix=".db") as temp_db:
+                storage_string = f"sqlite:///{temp_db.name}"
+                study = optuna.create_study(storage=storage_string, directions=['maximize' for _ in self.objective_params])
+                # study.optimize(objective, n_trials=self.n_iter, n_jobs=self.n_jobs if self.n_jobs > -1 else 1)
+                
+                with Parallel(n_jobs=self.n_jobs, pre_dispatch=self.pre_dispatch) as parallel:
+                    parallel(
+                        delayed(optimize_optuna_study)(
+                            study.study_name,
+                            storage_string,
+                            objective,
+                            (self.n_iter // self.n_jobs) + 1,
+                        ) for _ in range(self.n_jobs)
+                    )
+
+            all_out = [
+                r for t in study.trials for r in pickle.loads(base64.b64decode(t.user_attrs['out']))
+            ]
                             
-            if len(out) < 1:
+            if len(all_out) < 1:
                 raise ValueError('No fits were performed.')
-            elif len(out) != n_candidates * n_splits:
+            elif len(all_out) < self.n_iter * n_splits:
                 raise ValueError('Returned fits not consistent with size of parameter space.')
             
-            all_candidate_params.extend(candidate_params)
-            all_out.extend(out)
+            all_candidate_params = [t.params for t in study.trials]
             
             if more_results:
                 for key, value in more_results.items():
@@ -377,6 +390,10 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                 all_candidate_params, n_splits, all_out, all_more_results,
             )
 
+            nonlocal best_trials 
+
+            best_trials = [{'params': t.params, 'scores': dict(zip(self.objective_params, t._values))} for t in study.best_trials]
+
             return results
 
         self._run_search(evaluate_candidates)
@@ -384,6 +401,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
         self.best_index_ = results["rank_test_score"].argmin()
         self.best_score_ = results["mean_test_score"][self.best_index_]
         self.best_params_ = results["params"][self.best_index_]
+        self.best_trials_ = best_trials
 
         self.cv_results = results 
         self.n_splits_ = n_splits
@@ -435,13 +453,13 @@ def _fit_and_score(
         for i, r in enumerate(results):
             r['test_scores'] = {
                 'score': r['test_scores'],
-                'weight_orthogonality': estimator._weight_orthogonality[i],
-                'sample_orthogonality': estimator._sample_orthogonality[i]
+                'weight_orthogonality': -1.*estimator._weight_orthogonality[i],
+                'sample_orthogonality': -1.*estimator._sample_orthogonality[i]
             }
             r['train_scores'] = {
                 'score': r['train_scores'],
-                'weight_orthogonality': estimator._weight_orthogonality[i],
-                'sample_orthogonality': estimator._sample_orthogonality[i]
+                'weight_orthogonality': -1.*estimator._weight_orthogonality[i],
+                'sample_orthogonality': -1.*estimator._sample_orthogonality[i]
             }
 
     return results 
