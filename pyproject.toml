@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nmf_fragment_decomposition"
+version = "0.0.1"
+description = "Decompisiton of ms2 fragment spectra."
+authors = [
+    {name = "Mitch Ledwith", email = "mitch@veliatx.com"}
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3.8",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "tqdm",
+    "scikit-learn",
+    "scipy",
+    "mmh3",
+    "matplotlib",
+    "mokapot",
+    "pyopenms",
+    "pyteomics",
+    "click",
+    "lxml",
+    "pyarrow",
+    "black",
+]
+
+[tool.setuptools]
+packages = ["nmf_fragment_decomposition"]
