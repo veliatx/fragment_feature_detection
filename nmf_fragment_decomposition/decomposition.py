@@ -19,7 +19,7 @@ from sklearn.utils._param_validation import Interval
 from sklearn.base import BaseEstimator, clone
 from sklearn.utils.parallel import Parallel, delayed
 
-from utils import calculate_hoyer_sparsity
+from utils import calculate_hoyer_sparsity, calculate_nmf_summary
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,8 @@ class OptimizationParameters:
             'nonzero_component_fraction': self._components_in_window / self._components,
             'mean_weight_sparsity': -1.0,
             'mean_sample_sparsity': -1.0,
-            # 'fraction_window_component': (self._components_in_window * 4 * self._component_sigma) / self._scan_width,
-            'fraction_window_component': 0.0,
+            'fraction_window_component': (self._components_in_window * 4 * self._component_sigma) / self._scan_width,
+            # 'fraction_window_component': 0.0,
         }
     
     def score(self, param: str) -> float:
@@ -244,29 +244,7 @@ class NMFMaskWrapper(BaseEstimator):
                 m_train = splitter.mask_train_matrix(m_train, test_mask)
                 W, H, model = self.fit_model(m_train)
                 
-                non_zero_components = (~np.isclose(W.sum(axis=0), 0.0)) & (~np.isclose(H.sum(axis=1), 0.0))
-                if non_zero_components.sum() >= 2:
-                    H_nonzero = H[non_zero_components,:]
-                    W_nonzero = W[:,non_zero_components]
-                    orthogonality_H = H_nonzero @ H_nonzero.T 
-                    orthogonality_W = W_nonzero.T @ W_nonzero
-                    weight_identity_matrix_approximation = orthogonality_H / np.linalg.norm(H_nonzero, axis=1)[..., np.newaxis]
-                    sample_identity_matrix_approximation = orthogonality_W / np.linalg.norm(W_nonzero, axis=0)[..., np.newaxis]
-                    weight_deviation_identity = np.linalg.norm(
-                        weight_identity_matrix_approximation - np.eye(H_nonzero.shape[0])
-                    )
-                    sample_deviation_identity = np.linalg.norm(
-                        sample_identity_matrix_approximation - np.eye(W_nonzero.shape[1])
-                    )
-                    # We usually want to maximize sparsity, so making these negative here because the sign gets 
-                    # automatically inverted in _fit_and_score. 
-                    weight_sparsity = -1.*np.apply_along_axis(calculate_hoyer_sparsity, axis=0, arr=W_nonzero).mean()
-                    sample_sparsity = -1.*np.apply_along_axis(calculate_hoyer_sparsity, axis=1, arr=H_nonzero).mean()
-                else:
-                    weight_deviation_identity = 0.0
-                    sample_deviation_identity = 0.0
-                    weight_sparsity = 0.0
-                    sample_sparsity = 0.0
+                summary_results = calculate_nmf_summary(W, H)
 
                 m_reconstructed = W@H
 
@@ -285,17 +263,17 @@ class NMFMaskWrapper(BaseEstimator):
                     model,
                 )
 
-                self._nonzero_component_fraction.append((W.sum(axis=0) > 0).sum() / W.shape[1])
-                self._mean_weight_sparsity.append(weight_sparsity)
-                self._mean_sample_sparsity.append(sample_sparsity)
-                self._weight_orthogonality.append(np.log2(weight_deviation_identity + 1.))
-                self._sample_orthogonality.append(np.log2(sample_deviation_identity + 1.))
+                self._nonzero_component_fraction.append(summary_results['nonzero_component_fraction'])
+                self._mean_weight_sparsity.append(summary_results['weight_sparsity'])
+                self._mean_sample_sparsity.append(summary_results['sample_sparsity'])
+                self._weight_orthogonality.append(summary_results['weight_deviation_identity'])
+                self._sample_orthogonality.append(summary_results['sample_deviation_identity'])
                 self._neglog_ratio_train_test_reconstruction_error.append(-1.0*np.log2(mse_train / mse))
                 self._test_reconstruction_errors.append(mse)
                 self._train_reconstruction_errors.append(mse_train)
                 self._test_samples.append(test_mask.sum())
                 self._train_samples.append(train_mask.sum())
-                self._fraction_window_component.append((W.sum(axis=1) > 0).sum() / W.shape[0])
+                self._fraction_window_component.append(summary_results['fraction_window_component'])
         
         return self 
 

@@ -63,3 +63,9 @@ class Config:
             "sigma_bounds": [0.1, 10.0],
         }
     )
+
+    feature_matching = AttributeDict(
+        **{
+            "alpha": 0.1,
+        }
+    )

@@ -10,6 +10,7 @@ import numpy as np
 from sklearn.decomposition import NMF
 from tqdm import tqdm 
 import h5py
+import pandas as pd
 
 import scipy.ndimage as ndi 
 import scipy.sparse as sps 
@@ -22,6 +23,7 @@ from decomposition import fit_nmf_matrix_custom_init
 from config import Config
 
 logger = logging.getLogger(__name__)
+
 
 class ScanWindow:
     """A class representing a window of mass spectrometry scans for a specific GPF (Gas Phase Fraction) value.
@@ -63,7 +65,10 @@ class ScanWindow:
     _component_means = None 
     _component_sigmas = None 
     _component_maes = None
+    _component_names = None
     _is_component_fit = False
+
+    _ms1_features = None
 
     def __init__(
         self, 
@@ -177,6 +182,13 @@ class ScanWindow:
         )
 
     @property 
+    def component_names(self) -> np.ndarray:
+        """ """
+        if not getattr(self, '_is_component_fit', False):
+            raise AttributeError('Need to fit gaussians.')
+        return self._component_names[self.component_indices]
+
+    @property 
     def is_filtered(self) -> bool:
         """ """
         return self._is_filtered 
@@ -185,6 +197,22 @@ class ScanWindow:
     def is_fit(self) -> bool:
         """ """
         return self._is_fit
+    
+    @property
+    def ms1_features(self) -> Tuple[np.ndarray, np.ndarray]:
+        """ """
+        if not getattr(self, '_ms1_features', False):
+            raise AttributeError('No ms1 features added to this scanwindow.')
+        
+        ms1_elution = np.vstack(
+            [
+                f._interpolated_intensity for f in self._ms1_features
+            ]
+        ).T
+
+        ms1_feature_name = np.array([f._id for f in self._ms1_features])
+
+        return (ms1_elution, ms1_feature_name)
 
     def mask_component(self, component_index) -> None:
         """ """
@@ -222,8 +250,10 @@ class ScanWindow:
 
     def filter_edge_scans(self) -> None:
         """ """
-        self._m[:self._filter_edge_nscans,:] = 0.0 
-        self._m[-1*self._filter_edge_nscans:,:] = 0.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            self._m[:self._filter_edge_nscans,:] = 0.0 
+            self._m[-1*self._filter_edge_nscans:,:] = 0.0
         self.filter_zero_mz()
 
     def filter_zero_mz(self) -> None:
@@ -255,14 +285,14 @@ class ScanWindow:
             m_m = m_m[..., np.newaxis]
         self._m_max = m_m
         self._m_max_bin_indices = self._mz_bin_indices.copy()
-        if isinstance(self._m, sps.csr_matrix):
-            self._m = self._m.multiply(1 / m_m)
+        if not isinstance(self._m, (np.ndarray, np.matrix)):
+            self._m = self._m.multiply(1.0 / m_m)
         else:
             self._m = self._m / m_m
 
     def transform_log_scans(self) -> None:
         """ """
-        self._m = np.log1p(self._m).todense()
+        self._m = np.log1p(self._m)
 
     def filter_percentile_scans(self) -> None:
         """ """
@@ -294,7 +324,9 @@ class ScanWindow:
         grey_closing_size: int = 2, 
     ) -> np.ndarray:
         """ """
-        if isinstance(self._m, sps.csr_matrix):
+        is_sparse = False
+        if not isinstance(self._m, (np.ndarray, np.matrix)):
+            is_sparse = True
             self._m = self._m.toarray()
         self._m = ndi.grey_erosion(
             ndi.grey_closing(
@@ -304,6 +336,8 @@ class ScanWindow:
             size=(grey_erosion_size, 1),
         )
         self.filter_zero_mz()
+        if is_sparse:
+            self._m = sps.csr_matrix(self._m)
     
     def reverse_transform_maxscale_scans(self) -> np.ndarray:
         """ """
@@ -341,8 +375,9 @@ class ScanWindow:
         self._component_keep[self._non_zero_components] = True
         self._is_fit = True
 
-    def set_peak_fits(self, m: np.ndarray, s: np.ndarray, maes: np.ndarray) -> None:
+    def set_peak_fits(self, m: np.ndarray, s: np.ndarray, maes: np.ndarray, keep: np.ndarray) -> None:
         """ """
+        self._component_keep[self._non_zero_components] = keep.copy()
         self._component_means = np.zeros(self._w.shape[1])
         self._component_means[self._non_zero_components] = m.copy()
         self._component_sigmas = np.zeros(self._w.shape[1])
@@ -358,6 +393,17 @@ class ScanWindow:
                 self.retention_time[-1*self._filter_edge_nscans] < (self._component_means + 2*self._component_sigmas)
             )
             self._component_keep[mask] = False
+        self._component_names = np.array(
+            [
+                (
+                    f"{self._gpf}_{i}-"
+                    f"{self._scan_index[np.argmin(np.absolute(self._retention_time-self._component_means[i]))]}_"
+                    f"{self._component_means[i]}_"
+                    f"{self._component_sigmas[i]}" 
+                )
+                for i in range(self._w.shape[1])
+            ]
+        )
         self._is_component_fit = True
 
     def dump_h5(
@@ -427,6 +473,30 @@ class ScanWindow:
             grp.create_dataset('component_means', data=self._component_means)
             grp.create_dataset('component_sigmas', data=self._component_sigmas)
             grp.create_dataset('component_maes', data=self._component_maes)
+
+        # Save MS1 features if they exist
+        if self._ms1_features is not None:
+            ms1_grp = grp.create_group('ms1_features')
+            for i, feature in enumerate(self._ms1_features):
+                feature.dump_h5(ms1_grp, f'feature_{i}')
+
+        # Save class-level configuration attributes
+        grp.attrs['filter_edge_nscans'] = self._filter_edge_nscans
+        grp.attrs['denoise_scans'] = self._denoise_scans
+        grp.attrs['scale_scans'] = self._scale_scans
+        grp.attrs['percentile_filter_scans'] = self._percentile_filter_scans
+        grp.attrs['percentile_filter'] = self._percentile_filter
+        grp.attrs['log_scans'] = self._log_scans
+        grp.attrs['filter_edge_scans'] = self._filter_edge_scans
+
+        # Save m_max data if it exists
+        if self._m_max is not None:
+            grp.create_dataset('m_max', data=self._m_max)
+            grp.create_dataset('m_max_bin_indices', data=self._m_max_bin_indices)
+
+        # Save component names if they exist
+        if self._component_names is not None:
+            grp.create_dataset('component_names', data=self._component_names.astype('S'))
 
         if close_file:
             f.close()
@@ -501,6 +571,246 @@ class ScanWindow:
             obj._component_sigmas = grp['component_sigmas'][:]
             obj._component_maes = grp['component_maes'][:]
             obj._is_component_fit = True
+
+        # Load MS1 features if they exist
+        if 'ms1_features' in grp:
+            obj._ms1_features = []
+            ms1_grp = grp['ms1_features']
+            for i in range(len(ms1_grp)):
+                feature = MS1Feature.from_h5(ms1_grp, f'feature_{i}')
+                obj._ms1_features.append(feature)
+
+        # Load class-level configuration attributes
+        obj._filter_edge_nscans = grp.attrs['filter_edge_nscans']
+        obj._denoise_scans = grp.attrs['denoise_scans']
+        obj._scale_scans = grp.attrs['scale_scans']
+        obj._percentile_filter_scans = grp.attrs['percentile_filter_scans']
+        obj._percentile_filter = grp.attrs['percentile_filter']
+        obj._log_scans = grp.attrs['log_scans']
+        obj._filter_edge_scans = grp.attrs['filter_edge_scans']
+
+        # Load m_max data if it exists
+        if 'm_max' in grp:
+            obj._m_max = grp['m_max'][:]
+            obj._m_max_bin_indices = grp['m_max_bin_indices'][:]
+
+        # Load component names if they exist
+        if 'component_names' in grp:
+            obj._component_names = grp['component_names'][:].astype('U')
+
+        if close_file:
+            f.close()
+
+        return obj
+
+    def add_ms1_features(self, ms1_df: pd.DataFrame, isotope_mu: float = 1.008) -> None:
+        """ """
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            sub_ms1_df = ms1_df.loc[
+                (ms1_df['rtStart'] < self.retention_time[-1]) & 
+                (ms1_df['rtEnd'] > self.retention_time[0]) & 
+                (ms1_df['rtApex'].map(lambda x: self.retention_time[0] < x < self.retention_time[-1]))
+            ]
+            sub_ms1_df.loc[:,"mz_isotopes"] = sub_ms1_df.apply(
+                lambda x: [
+                    x.mz + (i * isotope_mu / x.charge)
+                    for i in range(0, x.nIsotopes)
+                    if x.mz + (i * isotope_mu / x.charge) >= getattr(self, '_gpf_low', self._gpf - 1.0)
+                    and x.mz + (i * isotope_mu / x.charge) <= getattr(self, '_gpf_high', self._gpf + 1.0)
+                ],
+                axis=1,
+            )
+            sub_ms1_df = sub_ms1_df.loc[sub_ms1_df['mz_isotopes'].map(lambda x: len(x) > 0)]
+
+        self._ms1_features = []
+
+        for i, r in sub_ms1_df.iterrows():
+            ms1_feature = MS1Feature.from_biosaur2_series_with_ms2(
+                r.copy(), self.retention_time.copy(),
+            )
+            self._ms1_features.append(ms1_feature)
+
+class MS1Feature:
+
+    _interpolated_retention_time = None
+    _interpolated_intensity_list = None
+
+    def __init__(
+        self, 
+        df_index: int, 
+        calibrated_mass: float,
+        retention_time_apex: float,
+        intensity_apex: float, 
+        intensity_sum: float,
+        charge: int,
+        n_isotopes: int, 
+        n_scans: int, 
+        mz: float, 
+        rt_start: float, 
+        rt_end: float,
+        scan_index: List[int],
+        intensity: List[float],
+        scan_apex: int,
+    ) -> None:
+        self._id = df_index 
+        self._calibrated_mass = calibrated_mass
+        self._retention_time_apex = retention_time_apex
+        self._intensity_apex = intensity_apex
+        self._intensity_sum = intensity_sum
+        self._charge = charge
+        self._n_isotopes = n_isotopes
+        self._n_scans = n_scans
+        self._mz = mz
+        self._rt_start = rt_start
+        self._rt_end = rt_end
+        self._scan_index = np.array(scan_index)
+        self._intensity = np.array(intensity)
+        self._scan_apex = scan_apex
+        self._retention_time = np.linspace(
+            rt_start,
+            rt_end,
+            len(scan_index),
+            endpoint=True,
+        )
+
+    @classmethod
+    def from_biosaur2_series(cls, series: pd.Series) -> 'MS1Feature':
+        """Create an MS1Feature from a Biosaur2 pandas Series.
+
+        Args:
+            series (pd.Series): Series containing Biosaur2 feature data
+
+        Returns:
+            MS1Feature: New instance initialized with Biosaur2 data
+        """
+        return cls(
+            df_index=series.name,
+            calibrated_mass=series['massCalib'],
+            retention_time_apex=series['rtApex'],
+            intensity_apex=series['intensityApex'],
+            intensity_sum=series['intensitySum'],
+            charge=series['charge'],
+            n_isotopes=series['nIsotopes'],
+            n_scans=series['nScans'],
+            mz=series['mz'],
+            rt_start=series['rtStart'],
+            rt_end=series['rtEnd'],
+            scan_index=series['mono_hills_scan_lists'],
+            intensity=series['mono_hills_intensity_list'],
+            scan_apex=series['scanApex'],
+        )
+
+    @classmethod 
+    def from_biosaur2_series_with_ms2(cls, series: pd.Series, ms2_rts: np.ndarray) -> 'MS1Feature':
+        """ """
+        obj = cls.from_biosaur2_series(series)
+        obj.interpolate_onto_ms2(ms2_rts)
+
+        return obj
+    
+    def interpolate_onto_ms2(self, ms2_rts: np.ndarray) -> None:
+        """ """
+        intensities =  np.interp(
+            ms2_rts, 
+            self._retention_time, 
+            [0.0]+self._intensity[1:-1].tolist()+[0.0],
+        )
+
+        self._interpolated_retention_time = ms2_rts
+        self._interpolated_intensity = intensities
+
+    def dump_h5(
+        self,
+        h5file: Union[str, h5py.File, h5py.Group],
+        dataset_name: str = 'ms1_feature',
+    ) -> None:
+        """Save the MS1Feature object to an HDF5 file or group.
+
+        Args:
+            h5file (Union[str, h5py.File, h5py.Group]): Path to HDF5 file or h5py File/Group object
+            dataset_name (str): Name of the dataset/group to store the object
+        """
+        if isinstance(h5file, str):
+            f = h5py.File(h5file, 'w')
+            grp = f.create_group(dataset_name)
+            close_file = True
+        else:
+            grp = h5file.create_group(dataset_name)
+            close_file = False
+
+        # Save scalar attributes
+        grp.attrs['id'] = self._id
+        grp.attrs['calibrated_mass'] = self._calibrated_mass
+        grp.attrs['retention_time_apex'] = self._retention_time_apex
+        grp.attrs['intensity_apex'] = self._intensity_apex
+        grp.attrs['intensity_sum'] = self._intensity_sum
+        grp.attrs['charge'] = self._charge
+        grp.attrs['n_isotopes'] = self._n_isotopes
+        grp.attrs['n_scans'] = self._n_scans
+        grp.attrs['mz'] = self._mz
+        grp.attrs['rt_start'] = self._rt_start
+        grp.attrs['rt_end'] = self._rt_end
+        grp.attrs['scan_apex'] = self._scan_apex
+
+        # Save arrays
+        grp.create_dataset('scan_index', data=self._scan_index)
+        grp.create_dataset('intensity', data=self._intensity)
+        grp.create_dataset('retention_time', data=self._retention_time)
+
+        # Save interpolated data if it exists
+        if self._interpolated_retention_time is not None:
+            grp.create_dataset('interpolated_retention_time', data=self._interpolated_retention_time)
+            grp.create_dataset('interpolated_intensity', data=self._interpolated_intensity)
+
+        if close_file:
+            f.close()
+
+    @classmethod
+    def from_h5(
+        cls,
+        h5file: Union[str, h5py.File, h5py.Group],
+        dataset_name: str = 'ms1_feature',
+    ) -> 'MS1Feature':
+        """Load an MS1Feature object from an HDF5 file or group.
+
+        Args:
+            h5file (Union[str, h5py.File, h5py.Group]): Path to HDF5 file or h5py File/Group object
+            dataset_name (str): Name of the dataset/group containing the object
+
+        Returns:
+            MS1Feature: Loaded object
+        """
+        if isinstance(h5file, str):
+            f = h5py.File(h5file, 'r')
+            grp = f[dataset_name]
+            close_file = True
+        else:
+            grp = h5file[dataset_name]
+            close_file = False
+
+        # Create instance
+        obj = cls(
+            df_index=grp.attrs['id'],
+            calibrated_mass=grp.attrs['calibrated_mass'],
+            retention_time_apex=grp.attrs['retention_time_apex'],
+            intensity_apex=grp.attrs['intensity_apex'],
+            intensity_sum=grp.attrs['intensity_sum'],
+            charge=grp.attrs['charge'],
+            n_isotopes=grp.attrs['n_isotopes'],
+            n_scans=grp.attrs['n_scans'],
+            mz=grp.attrs['mz'],
+            rt_start=grp.attrs['rt_start'],
+            rt_end=grp.attrs['rt_end'],
+            scan_index=grp['scan_index'][:],
+            intensity=grp['intensity'][:],
+            scan_apex=grp.attrs['scan_apex'],
+        )
+
+        # Load interpolated data if it exists
+        if 'interpolated_retention_time' in grp:
+            obj._interpolated_retention_time = grp['interpolated_retention_time'][:]
+            obj._interpolated_intensity = grp['interpolated_intensity'][:]
 
         if close_file:
             f.close()
@@ -599,6 +909,32 @@ class GPFRun:
                 i for i, sw in enumerate(self._scan_windows) if 
                 getattr(sw, units)[0] < end and getattr(sw, units)[-1] > start
             ]
+
+    def get_overlapping_components(
+        self,
+        start: float, 
+        end: float, 
+        units: Literal['retention_time', 'scan_index', 'scan_number'] = 'scan_index',
+    ) -> Tuple[np.ndarray]:
+        """ """   
+
+        indices = self.get_overlapping_scanwindow_indices(
+            start, end, units=units, ignore_indexed=False
+        )
+    
+        scan_windows = [self._scan_windows[i] for i in indices]
+        component_names = np.concatenate([sw.component_names for sw in scan_windows])
+        all_retention_times = np.unique([r for sw in scan_windows for r in sw.retention_time])
+        w_matrices = [w for sw in scan_windows for w in sw.w.T]
+        scan_indices = [sw.scan_index for sw in scan_windows for _ in sw.component_names]
+        all_scan_indices = np.unique([idx for sw in scan_windows for idx in sw.scan_index])
+
+        m = np.zeros((all_scan_indices.shape[0], component_names.shape[0]))
+
+        for i in range(component_names.shape[0]):
+            m[scan_indices[i] - all_scan_indices.min(), i] = w_matrices[i]
+
+        return m, component_names, all_scan_indices, all_retention_times
 
     def collapse_redundant_components(
         self,
@@ -933,25 +1269,34 @@ class MSRun:
 
 def fit_scanwindow(
     w: ScanWindow,  
-    fitpeaks_kwargs: Dict[str, Any] = {},
+    **fitpeaks_kwargs: Dict[str, Any],
 ) -> None:
     """ """
     mus = []
     sigmas = []
     maes = []
+    keep = []
     for i, s in enumerate(w.component_indices):
-        (mu, s), pcov, mae = fit_gaussian_elution(
-            w.retention_time, 
-            w.w[:,i],
-            **fitpeaks_kwargs,
-        )
-        mus.append(mu)
-        sigmas.append(s)
-        maes.append(mae)
+        try:
+            (mu, s), pcov, mae = fit_gaussian_elution(
+                w.retention_time, 
+                w.w[:,i],
+                **fitpeaks_kwargs,
+            )
+            mus.append(mu)
+            sigmas.append(s)
+            maes.append(mae)
+            keep.append(True)
+        except:
+            mus.append(0)
+            sigmas.append(0)
+            maes.append(0)
+            keep.append(False)
     w.set_peak_fits(
         np.array(mus),
         np.array(sigmas),
         np.array(maes),
+        np.array(keep)
     )
 
 def fit_nmf_matrix_scanwindow(
@@ -965,3 +1310,7 @@ def fit_nmf_matrix_scanwindow(
         w.m, W_init=W_init, H_init=H_init, return_model=True, **nmf_kwargs,
     )
     w.set_nmf_fit(W, H, model)
+
+# def fit_ms1_ms2_feature_matching(
+    
+# )

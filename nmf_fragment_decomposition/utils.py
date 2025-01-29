@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import numpy as np
 from tqdm import tqdm 
@@ -102,6 +102,41 @@ def calculate_simple_sparsity(m: np.ndarray) -> float:
         return 0.0
 
     return (m > 0).sum() / m.size
+
+def calculate_nmf_summary(W: np.ndarray, H: np.ndarray) -> Dict[str, float]:
+    """ """
+    non_zero_components = (~np.isclose(W.sum(axis=0), 0.0)) & (~np.isclose(H.sum(axis=1), 0.0))
+    if non_zero_components.sum() >= 2:
+        H_nonzero = H[non_zero_components,:]
+        W_nonzero = W[:,non_zero_components]
+        orthogonality_H = H_nonzero @ H_nonzero.T 
+        orthogonality_W = W_nonzero.T @ W_nonzero
+        weight_identity_matrix_approximation = orthogonality_H / np.linalg.norm(orthogonality_H, axis=1)[..., np.newaxis]
+        sample_identity_matrix_approximation = orthogonality_W / np.linalg.norm(orthogonality_W, axis=0)[..., np.newaxis]
+        weight_deviation_identity = np.linalg.norm(
+            weight_identity_matrix_approximation - np.eye(H_nonzero.shape[0])
+        )
+        sample_deviation_identity = np.linalg.norm(
+            sample_identity_matrix_approximation - np.eye(W_nonzero.shape[1])
+        )
+        # We usually want to maximize sparsity, so making these negative here because the sign gets 
+        # automatically inverted in _fit_and_score. 
+        weight_sparsity = -1.*np.apply_along_axis(calculate_hoyer_sparsity, axis=0, arr=W_nonzero).mean()
+        sample_sparsity = -1.*np.apply_along_axis(calculate_hoyer_sparsity, axis=1, arr=H_nonzero).mean()
+    else:
+        weight_deviation_identity = 0.0
+        sample_deviation_identity = 0.0
+        weight_sparsity = 0.0
+        sample_sparsity = 0.0
+
+    return {
+        'weight_sparsity': weight_sparsity,
+        'sample_sparsity': sample_sparsity,
+        'weight_deviation_identity': weight_deviation_identity,
+        'sample_deviation_identity': sample_deviation_identity,
+        'nonzero_component_fraction': (W.sum(axis=0) > 0).sum() / W.shape[1],
+        'fraction_window_component': (W.sum(axis=1) > 0).sum() / W.shape[0],
+    }
 
 
 

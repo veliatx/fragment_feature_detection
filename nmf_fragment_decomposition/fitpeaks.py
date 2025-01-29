@@ -3,7 +3,7 @@ from typing import Tuple, Optional, Dict, Any
 import numpy as np
 
 import scipy.stats as stats
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize
 
 def approximate_overlap_curves(
     m1: float,
@@ -103,4 +103,33 @@ def fit_gaussian_elution(
     e = np.absolute(stats.norm(*popt).pdf(t) - m_scale).mean()
 
     return popt, pcov, e
+
+def least_squares_with_l1_bounds(
+    X: np.ndarray,
+    y: np.ndarray,
+    alpha: float = 0.1,
+    bounds: Tuple[float, float] = (
+        0.0,
+        1.0,
+    ),
+) -> np.ndarray:
+    """ """
+
+    def objective(coef: np.ndarray) -> float:
+        return np.sum((np.dot(X, coef) - y) ** y) + alpha * np.sum(np.abs(coef))
+
+    coef_init = np.zeros(X.shape[1])
+
+    coef_bounds = [bounds for _ in coef_init]
+
+    result = minimize(
+        objective,
+        coef_init,
+        method="SLSQP",
+        bounds=coef_bounds,
+        options={"maxiter": 100},
+    )
+
+    return result.x
+
         
