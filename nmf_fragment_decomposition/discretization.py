@@ -1,7 +1,9 @@
-from typing import Literal, Tuple, Union, List
+from typing import Literal, Tuple, Union, List, Dict, Any
 
 import numpy as np
+import h5py
 
+from config import Config
 
 class MzDiscretize:
     """A class for discretizing mass-to-charge (m/z) values into bins.
@@ -25,6 +27,7 @@ class MzDiscretize:
         mz_high: float = 2000.0,
         steps: int = 2,
         tolerance: float = 60.0 / 1e6,
+        **kwargs: Dict[str, Any],
     ):
         self._bin_width = bin_width
         self._mz_low = mz_low
@@ -211,3 +214,83 @@ class MzDiscretize:
             )
 
         return disc_m
+
+    @classmethod 
+    def from_config(cls, config: Config = Config) -> 'MzDiscretize':
+        """ """
+        return cls(**config.discretization)
+
+    def dump_h5(
+        self, h5file: Union[str, h5py.File, h5py.Group], 
+        dataset_name: str = 'mz_discretize',
+    ) -> None:
+        """Save the MzDiscretize object to an HDF5 file or group.
+
+        Args:
+            h5file (Union[str, h5py.File, h5py.Group]): Path to HDF5 file or h5py File/Group object
+            dataset_name (str): Name of the dataset/group to store the object. Defaults to 'mz_discretize'
+        """
+
+        # Handle string path vs h5py object
+        if isinstance(h5file, str):
+            # with h5py.File(h5file, 'w') as f:
+            f = h5py.File(h5file, 'w')
+            grp = f.create_group(dataset_name)
+            close_file = True
+        else:
+            grp = h5file.create_group(dataset_name)
+            close_file = False
+        
+        # Save attributes
+        grp.attrs['bin_width'] = self._bin_width
+        grp.attrs['mz_low'] = self._mz_low
+        grp.attrs['mz_high'] = self._mz_high
+        grp.attrs['steps'] = self._steps
+        grp.attrs['tolerance'] = self._tolerance
+        
+        # Save bins array
+        grp.create_dataset('bins', data=self._bins)
+
+        if close_file:
+            f.close()
+
+    @classmethod
+    def from_h5(
+        cls, 
+        h5file: Union[str, h5py.File, h5py.Group],
+        dataset_name: str = 'mz_discretize',
+    ) -> 'MzDiscretize':
+        """Load a MzDiscretize object from an HDF5 file or group.
+
+        Args:
+            h5file (Union[str, h5py.File, h5py.Group]): Path to HDF5 file or h5py File/Group object
+            dataset_name (str): Name of the dataset/group containing the object. Defaults to 'mz_discretize'
+
+        Returns:
+            MzDiscretize: Loaded object
+        """
+        # Handle string path vs h5py object
+        if isinstance(h5file, str):
+            f = h5py.File(h5file, 'r')
+            grp = f[dataset_name]
+            close_file = True
+        else:
+            grp = h5file[dataset_name]
+            close_file = False
+
+        # Create instance with stored parameters
+        obj = cls(
+            bin_width=grp.attrs['bin_width'],
+            mz_low=grp.attrs['mz_low'],
+            mz_high=grp.attrs['mz_high'],
+            steps=grp.attrs['steps'],
+            tolerance=grp.attrs['tolerance']
+        )
+        
+        # Replace bins with stored array
+        obj._bins = grp['bins'][:]
+
+        if close_file:
+            f.close()
+
+        return obj

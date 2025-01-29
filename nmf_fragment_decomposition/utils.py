@@ -11,20 +11,29 @@ from config import Config
 
 def ms2_df_to_long(
     df: pd.DataFrame, 
-    config: Optional[Config]=Config,
+    config: Config=Config,
 ) -> np.ndarray:
     """ """
 
     mz_arrays = []
 
-    for mass in tqdm(df["MS2TargetMass"].unique(), disable=config.tqdm_enabled):
+    for mass in tqdm(df["MS2TargetMass"].unique(), disable=(not config.tqdm_enabled)):
         sub_df = df.loc[df["MS2TargetMass"] == mass]
         sub_df.set_index(["RetentionTime", "ScanNum"], inplace=True)
         mzs = []
 
-        for (retention_time, scan_number), r in sub_df.loc[:, ["m/zArray", "IntensityArray"]].iterrows():
-            for mz, intensity in zip(r["m/zArray"], r["IntensityArray"]):
-                mzs.append([mass, scan_number, retention_time, mz, intensity])
+        for (retention_time, scan_number), r in sub_df.loc[:, ["m/zArray", "IntensityArray", "lowerMass", "higherMass"]].iterrows():
+            mz_array = r['m/zArray']
+            intensity_array = r['IntensityArray']
+            if config.ms2_preprocessing.filter_spectra:
+                median_intensity = np.median(r['IntensityArray'])
+                mz_array = mz_array[intensity_array > median_intensity]
+                intensity_array = intensity_array[intensity_array > median_intensity]
+            for mz, intensity in zip(mz_array, intensity_array):
+                if config.ms2_preprocessing.include_gpf_bounds:
+                    mzs.append([mass, scan_number, retention_time, mz, intensity, r['lowerMass'], r['higherMass']])
+                else:
+                    mzs.append([mass, scan_number, retention_time, mz, intensity])
 
         mz_arrays.append(np.vstack(mzs))
 
@@ -83,7 +92,7 @@ def calculate_hoyer_sparsity(m: np.ndarray) -> float:
         return 0.0
 
     sparseness_num = np.sqrt(m.size) - (m.sum() / np.sqrt(np.multiply(m, m).sum()))
-    sparseness_den = m.size - 1
+    sparseness_den = np.sqrt(m.size) - 1
 
     return sparseness_num / sparseness_den
 

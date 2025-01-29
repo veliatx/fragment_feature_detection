@@ -1,5 +1,5 @@
 from typing import (
-    Union, List, Optional, Any, Tuple, Dict, Callable
+    Union, List, Optional, Any, Tuple, Dict, Callable, Literal
 )
 import numbers
 from collections import defaultdict
@@ -19,7 +19,53 @@ from sklearn.utils._param_validation import Interval
 from sklearn.base import BaseEstimator, clone
 from sklearn.utils.parallel import Parallel, delayed
 
+from utils import calculate_hoyer_sparsity
+from config import Config
+
 logger = logging.getLogger(__name__)
+
+_FIT_AND_SCORE = [
+    '_test_reconstruction_errors',
+    '_weight_orthogonality',
+    '_sample_orthogonality',
+    '_nonzero_component_fraction',
+    '_neglog_ratio_train_test_reconstruction_error',
+    '_mean_weight_sparsity',
+    '_mean_sample_sparsity',
+    '_fraction_window_component',
+]
+
+class OptimizationParameters:
+
+    _components_in_window = 5.0
+    _components = 20.0
+    _scan_width = 150.0
+    _component_sigma = 4.0
+
+    def __init__(self):
+        """ """
+        self.set_params()
+
+    def set_params(self) -> None:
+        """ """
+        self.scores = {
+            'weight_orthogonality': 0.0,
+            'sample_orthogonality': 0.0,
+            'nonzero_component_fraction': self._components_in_window / self._components,
+            'mean_weight_sparsity': -1.0,
+            'mean_sample_sparsity': -1.0,
+            # 'fraction_window_component': (self._components_in_window * 4 * self._component_sigma) / self._scan_width,
+            'fraction_window_component': 0.0,
+        }
+    
+    def score(self, param: str) -> float:
+        """ """
+        pass
+    
+    @classmethod 
+    def from_config(cls, config: Config = Config) -> 'OptimizationParameters':
+        """ """
+        return cls()
 
 
 class MzBinMaskingSplitter:
@@ -64,16 +110,90 @@ class MzBinMaskingSplitter:
 
     def get_n_splits(self, X=None, y=None, groups=None):
         return self._n_splits
+    
+    @staticmethod
+    def mask_train_matrix(m: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """ """
+        m[mask] = 0.0
+        return m
+    
+    @staticmethod 
+    def mean_squared_error(
+        m: np.ndarray, 
+        m_reconstructed: np.ndarray, 
+        mask: np.ndarray, 
+        *args: Any,
+    ) -> float:
+        """ """
+        return np.nanmean((m[mask] - m_reconstructed[mask]) ** 2)
 
+class MzBinSampleSplitter:
+    """Custom splitter that samples scans in scanwindows"""
+
+    def __init__(
+        self, 
+        n_splits: int = 5, 
+        mask_fraction: float = 0.2, 
+        random_state: int = 42, 
+        **kwargs: Dict[str, Any],
+    ):
+        self._n_splits = n_splits
+        self._mask_fraction = mask_fraction
+        self._random_state = random_state
+
+    def split(self, X: List[np.ndarray], y=None):
+        """Generate train-test masks by randomly hiding mass bins in scanwindows"""
+        rng = np.random.default_rng(seed=self._random_state)
+        for _ in range(self._n_splits):
+            unmasked = []
+            masked = []
+            for m in X:
+                sub_mask = rng.random(m.shape[0]) < self._mask_fraction
+                unmasked.append(~sub_mask)
+                masked.append(sub_mask)
+            yield unmasked, masked
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self._n_splits
+    
+    @staticmethod
+    def mask_train_matrix(m: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """ """
+        return m[~mask]
+    
+    @staticmethod 
+    def mean_squared_error(
+        m: np.ndarray, 
+        m_reconstructed: np.ndarray, 
+        mask: np.ndarray, 
+        model: NMF,
+    ) -> float:
+        """ """
+        if model.components_.sum() == 0.0 or m[mask].sum() == 0.0:
+            return np.nanmean((m[mask] - np.zeros_like(m[mask])) ** 2)
+        mt = model.transform(m[mask])
+        m_reconstructed = mt @ model.components_
+
+        return np.nanmean((m[mask] - m_reconstructed) ** 2)
 
 class NMFMaskWrapper(BaseEstimator):
     """ """
 
-    def __init__(self, n_splits: int = 5, mask_fraction: float = 0.2, mask_signal: bool = True, **nmf_kwargs: Dict[str, Any]):
-        self._rng = np.random.default_rng(seed=nmf_kwargs.get('random_seed', 42))
+    def __init__(
+        self, 
+        splitter_type: Literal['Sample', 'Masking'] = 'Masking',
+        n_splits: int = 5, 
+        mask_fraction: float = 0.2, 
+        mask_signal: bool = True, 
+        balance_mask_signal: bool = True,
+        **nmf_kwargs: Dict[str, Any],
+    ):
+        self.splitter_type = splitter_type
+        self._rng = np.random.default_rng(seed=nmf_kwargs.get('random_state', 42))
         self.mask_fraction = mask_fraction 
         self.n_splits = n_splits
         self.mask_signal = mask_signal
+        self.balance_mask_signal = balance_mask_signal
         self._nmf_kwargs = nmf_kwargs
 
     def fit_model(self, m: np.ndarray):
@@ -87,21 +207,41 @@ class NMFMaskWrapper(BaseEstimator):
         """ """
         self._models = []
         self._reconstruction_errors = []
+        self._test_reconstruction_errors = []
         self._train_reconstruction_errors = []
+        self._neglog_ratio_train_test_reconstruction_error = []
+        self._nonzero_component_fraction = []
+        self._fraction_window_component = []
         self._weight_orthogonality = []
         self._sample_orthogonality = []
         self._test_samples = []
         self._train_samples = []
+        self._mean_weight_sparsity = []
+        self._mean_sample_sparsity = []
 
-        for train_idxes, test_idxes in MzBinMaskingSplitter(
-            n_splits=self.n_splits, 
-            mask_fraction=self.mask_fraction, 
-            mask_signal=self.mask_signal,
-            random_state=self._nmf_kwargs.get('random_seed', 42)
-        ).split(X):
+        if self.splitter_type == "Mask":
+            splitter = MzBinMaskingSplitter(
+                n_splits=self.n_splits, 
+                mask_fraction=self.mask_fraction, 
+                mask_signal=self.mask_signal,
+                balance_mask_signal=self.balance_mask_signal,
+                random_state=self._nmf_kwargs.get('random_state', 42)
+            )
+        elif self.splitter_type == "Sample": 
+            splitter = MzBinSampleSplitter(
+                n_splits=self.n_splits, 
+                mask_fraction=self.mask_fraction, 
+                random_state=self._nmf_kwargs.get('random_state', 42)
+            )
+        else:
+            raise ValueError(
+                f"Invalid splitter type: '{self.splitter_type}'. Must be either 'Masking' or 'Sample'."
+            )
+        
+        for train_idxes, test_idxes in splitter.split(X):
             for m, train_mask, test_mask in zip(X, train_idxes, test_idxes):
                 m_train = m.copy()
-                m_train[test_mask] = 0.0
+                m_train = splitter.mask_train_matrix(m_train, test_mask)
                 W, H, model = self.fit_model(m_train)
                 
                 non_zero_components = (~np.isclose(W.sum(axis=0), 0.0)) & (~np.isclose(H.sum(axis=1), 0.0))
@@ -118,23 +258,44 @@ class NMFMaskWrapper(BaseEstimator):
                     sample_deviation_identity = np.linalg.norm(
                         sample_identity_matrix_approximation - np.eye(W_nonzero.shape[1])
                     )
+                    # We usually want to maximize sparsity, so making these negative here because the sign gets 
+                    # automatically inverted in _fit_and_score. 
+                    weight_sparsity = -1.*np.apply_along_axis(calculate_hoyer_sparsity, axis=0, arr=W_nonzero).mean()
+                    sample_sparsity = -1.*np.apply_along_axis(calculate_hoyer_sparsity, axis=1, arr=H_nonzero).mean()
                 else:
                     weight_deviation_identity = 0.0
                     sample_deviation_identity = 0.0
+                    weight_sparsity = 0.0
+                    sample_sparsity = 0.0
 
                 m_reconstructed = W@H
 
                 self._models.append(model)
+                
+                mse = splitter.mean_squared_error(
+                    m, 
+                    m_reconstructed,
+                    test_mask,
+                    model,
+                )
+                mse_train = splitter.mean_squared_error(
+                    m, 
+                    m_reconstructed,
+                    train_mask,
+                    model,
+                )
 
-                mse = np.nanmean(( m[test_mask] - m_reconstructed[test_mask] ) ** 2)
-                mse_train = np.nanmean(( m[train_mask] - m_reconstructed[train_mask] ) ** 2)
-
-                self._weight_orthogonality.append(weight_deviation_identity)
-                self._sample_orthogonality.append(sample_deviation_identity)
-                self._reconstruction_errors.append(mse)
+                self._nonzero_component_fraction.append((W.sum(axis=0) > 0).sum() / W.shape[1])
+                self._mean_weight_sparsity.append(weight_sparsity)
+                self._mean_sample_sparsity.append(sample_sparsity)
+                self._weight_orthogonality.append(np.log2(weight_deviation_identity + 1.))
+                self._sample_orthogonality.append(np.log2(sample_deviation_identity + 1.))
+                self._neglog_ratio_train_test_reconstruction_error.append(-1.0*np.log2(mse_train / mse))
+                self._test_reconstruction_errors.append(mse)
                 self._train_reconstruction_errors.append(mse_train)
                 self._test_samples.append(test_mask.sum())
                 self._train_samples.append(train_mask.sum())
+                self._fraction_window_component.append((W.sum(axis=1) > 0).sum() / W.shape[0])
         
         return self 
 
@@ -144,8 +305,8 @@ class NMFMaskWrapper(BaseEstimator):
 
     def get_params(self, deep: bool = True):
         """Override get_params to allow access to nmf hyperparameters of interest."""
-        return self._nmf_kwargs
-
+        return {**super().get_params(deep=deep), **self._nmf_kwargs}
+    
     def set_params(self, **params: Dict[str, Any]):
         """Override set_params to update the parameters in _nmf_kwargs"""
         for param, value in params.items():
@@ -225,6 +386,7 @@ class RandomizedSearchReconstructionCV(BaseSearchCV):
                         clone(base_estimator),
                         X,
                         parameters=parameters,
+                        extra_scores=_FIT_AND_SCORE,
                     )
                     for parameters in candidate_params
                 )
@@ -259,9 +421,19 @@ class RandomizedSearchReconstructionCV(BaseSearchCV):
         self.cv_results = results 
         self.n_splits_ = n_splits
 
-        return self 
+        return self
+
 
 class OptunaSearchReconstructionCV(BaseSearchCV):
+
+    _prune_at_zero = [
+        '_weight_orthogonality',
+        '_sample_orthogonality',
+        '_nonzero_component_fraction',
+        '_mean_weight_sparsity',
+        '_mean_sample_sparsity',
+        '_fraction_window_component',
+    ]
 
     _required_parameters = ["estimator", "param_distributions"]
 
@@ -280,17 +452,21 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
         *,
         n_iter=10,
         scoring=None,
-        n_jobs=None,
-        verbose=0,
-        pre_dispatch="2*n_jobs",
-        random_state=None,
-        error_score=np.nan,
-        return_train_score=False,
+        n_jobs: Optional[int] = None,
+        verbose: int =0,
+        pre_dispatch: str = "2*n_jobs",
+        random_state: Optional[int] = None,
+        error_score: float = np.nan,
+        return_train_score: bool =False,
+        prune_bad_parameter_spaces: bool = False,
+        optimization_parameters: OptimizationParameters = OptimizationParameters(),
     ):
         self.param_sampling = param_sampling
         self.n_iter = n_iter 
         self.random_state = random_state 
         self.objective_params = objective_params
+        self.prune_bad_parameter_spaces = prune_bad_parameter_spaces
+        self.optimization_parameters = optimization_parameters
         super().__init__(
             estimator=estimator,
             scoring=scoring,
@@ -324,40 +500,70 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
 
             def objective(trial: optuna.Trial):
                 """ """
-
-                params = {}
-                for k, v in candidate_params.items():
-                    # Suggest categorical variable.
-                    if isinstance(v[0], str):
-                        params[k] = trial.suggest_categorical(k, v)
-                    # Suggest continuous variable. 
-                    elif isinstance(v[0], (float, int)):
-                        params[k] = trial.suggest_float(k, *v[:2], log=True if (len(v) > 2 and v[2] == 'log') else False)
-
-                results = _fit_and_score(
-                    clone(base_estimator),
-                    X, 
-                    params,
-                )
-
-                trial.set_user_attr('out', base64.b64encode(pickle.dumps(results)).decode("utf-8"))
-
                 try:
-                    return tuple([np.nanmean([r['test_scores'][k] for r in results]) for k in self.objective_params])
-                except:
-                    logger.info('Only one objective defined.')
+                        
+                    params = {}
+                    for k, v in candidate_params.items():
+                        # Suggest categorical variable.
+                        if isinstance(v[0], str):
+                            params[k] = trial.suggest_categorical(k, v)
+                        # Suggest continuous variable. 
+                        elif isinstance(v[0], (float, int)):
+                            params[k] = trial.suggest_float(k, *v[:2], log=True if (len(v) > 2 and v[2] == 'log') else False)
 
-                return np.nanmean([r['test_scores'] for r in results])
+                    results = _fit_and_score(
+                        clone(base_estimator),
+                        X, 
+                        parameters=params,
+                        extra_scores=_FIT_AND_SCORE,
+                    )
+
+                    # This is incompatible with optuna trial pruning. 
+
+                    # if self.prune_bad_parameter_spaces:
+                    #     for k in self._prune_at_zero:
+                    #         if (
+                    #             k.lstrip('_') in results[0]['test_scores'].keys() and \
+                    #             k.lstrip('_') in self.objective_params and \
+                    #             np.nanmean([r['test_scores'][k.lstrip('_')] for r in results]) == 0.0
+                    #         ):
+                    #             raise Exception('zero parameter space explored.')
+
+                    if any([r['fit_error'] for r in results]):
+                        raise Exception('One or more fits failed in cv.')
+
+                    trial.set_user_attr('out', base64.b64encode(pickle.dumps(results)).decode("utf-8"))
+
+                    try:
+                        output_parameters = []
+                        for k in self.objective_params:
+                            parameter_value = np.nanmean([r['test_scores'][k] for r in results])
+                            if self.prune_bad_parameter_spaces and f'_{k}' in self._prune_at_zero and parameter_value == 0.0:
+                                parameter_value = -10.0
+                            if k in self.optimization_parameters.scores.keys():
+                                parameter_value = -1.0 * np.abs(parameter_value + self.optimization_parameters.scores[k])
+                            output_parameters.append(parameter_value)
+                        return tuple(output_parameters)
+                    except:
+                        logger.info('Only one objective defined.')
+
+                    return np.nanmean([r['test_scores'] for r in results])
+                    
+                except Exception as e:
+                    print([r['fit_error'] for r in results])
+                    print(e)
+                    trial.set_user_attr("error", str(e))
+                    trial.set_user_attr("out", base64.b64encode(pickle.dumps([None] * int(base_estimator.n_splits))).decode("utf-8"))
+                    raise optuna.TrialPruned()
 
             def optimize_optuna_study(study_name: str, storage_string: str, objective: Callable, n_trials: int) -> None:
                 """ """
                 study = optuna.create_study(study_name=study_name, storage=storage_string, load_if_exists=True)
                 study.optimize(objective, n_trials=n_trials)
 
-            with tempfile.NamedTemporaryFile(suffix=".db") as temp_db:
+            with tempfile.NamedTemporaryFile(dir='/dev/shm', suffix=".db") as temp_db:
                 storage_string = f"sqlite:///{temp_db.name}"
                 study = optuna.create_study(storage=storage_string, directions=['maximize' for _ in self.objective_params])
-                # study.optimize(objective, n_trials=self.n_iter, n_jobs=self.n_jobs if self.n_jobs > -1 else 1)
                 
                 with Parallel(n_jobs=self.n_jobs, pre_dispatch=self.pre_dispatch) as parallel:
                     parallel(
@@ -368,9 +574,9 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                             (self.n_iter // self.n_jobs) + 1,
                         ) for _ in range(self.n_jobs)
                     )
-
             all_out = [
                 r for t in study.trials for r in pickle.loads(base64.b64decode(t.user_attrs['out']))
+                if not t.user_attrs.get('error', None)
             ]
                             
             if len(all_out) < 1:
@@ -378,7 +584,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
             elif len(all_out) < self.n_iter * n_splits:
                 raise ValueError('Returned fits not consistent with size of parameter space.')
             
-            all_candidate_params = [t.params for t in study.trials]
+            all_candidate_params = [t.params for t in study.trials if not t.user_attrs.get('error', None)]
             
             if more_results:
                 for key, value in more_results.items():
@@ -412,6 +618,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
 def _fit_and_score(
     estimator: BaseEstimator, 
     X: Union[List[Any], np.ndarray], 
+    extra_scores: Optional[List[str]] = None,
     parameters: Dict[str, Any] = {},
     **kwargs: Dict[str, Any],
 ) -> Tuple[float, float]:
@@ -439,7 +646,7 @@ def _fit_and_score(
 
     results = [
         {
-            'test_scores': -1.*estimator._reconstruction_errors[i],
+            'test_scores': -1.*estimator._test_reconstruction_errors[i],
             'train_scores': -1.*estimator._train_reconstruction_errors[i],
             'n_test_samples': estimator._test_samples[i],
             'estimator': estimator._models[i],
@@ -449,18 +656,20 @@ def _fit_and_score(
         } for i in range(estimator.n_splits)
     ]
 
-    if hasattr(estimator, '_weight_orthogonality') and hasattr(estimator, '_sample_orthogonality'):
+    if extra_scores and all(hasattr(estimator, es) for es in extra_scores):
         for i, r in enumerate(results):
             r['test_scores'] = {
                 'score': r['test_scores'],
-                'weight_orthogonality': -1.*estimator._weight_orthogonality[i],
-                'sample_orthogonality': -1.*estimator._sample_orthogonality[i]
             }
+            r['test_scores'].update(
+                {es.lstrip('_'): -1.0*getattr(estimator, es)[i] for es in extra_scores}
+            )
             r['train_scores'] = {
                 'score': r['train_scores'],
-                'weight_orthogonality': -1.*estimator._weight_orthogonality[i],
-                'sample_orthogonality': -1.*estimator._sample_orthogonality[i]
             }
+            r['train_scores'].update(
+                {es.lstrip('_'): -1.0*getattr(estimator, es)[i] for es in extra_scores}
+            )
 
     return results 
 
@@ -473,7 +682,8 @@ def fit_nmf_matrix_custom_init(
     l1_ratio: float = 0.75,
     max_iter: int = 500,
     solver: str = "cd",
-    random_seed: int = 42, 
+    random_state: int = 42, 
+    init: Optional[str] = None,
     W_init: Optional[np.ndarray] = None,
     H_init: Optional[np.ndarray] = None,
     return_model: bool = False,
@@ -498,6 +708,11 @@ def fit_nmf_matrix_custom_init(
         H (np.ndarray): H matrix
         model (Optional[NMF]): Fitted NMF model if return_model is True
     """
+    init = (
+        "custom"
+        if isinstance(W_init, np.ndarray) and isinstance(H_init, np.ndarray)
+        else (init if init else ('nndsvd' if solver == 'cd' else 'nndsvda'))
+    )
     model = NMF(
         n_components=min(n_components, min(m.shape)),
         alpha_W=alpha_W,
@@ -505,12 +720,8 @@ def fit_nmf_matrix_custom_init(
         l1_ratio=l1_ratio,
         max_iter=max_iter,
         solver=solver,
-        init=(
-            "custom"
-            if isinstance(W_init, np.ndarray) and isinstance(H_init, np.ndarray)
-            else nmf_kwargs.get("init", "nndsvd")
-        ),
-        random_state=random_seed,
+        init=init,
+        random_state=random_state,
         **nmf_kwargs,
     )
     if isinstance(W_init, np.ndarray) and isinstance(H_init, np.ndarray):
@@ -522,15 +733,43 @@ def fit_nmf_matrix_custom_init(
         return W, model.components_, model
     return W, model.components_
 
+
+def pick_parameters_optuna_harmonic_mean(
+    bcv: BaseSearchCV,
+    parameter_names: List[str],
+    constant: float = 0.001,
+) -> Dict[str, Any]:
+    """ """
+    if not all([f'mean_test_{p}' in bcv.cv_results.keys() for p in parameter_names]):
+        raise ValueError('All parameter names must be a valid parameter name in cv_results.')
+    
+    parameters = {
+        p: bcv.cv_results[f'mean_test_{p}'] for p in parameter_names
+    }
+ 
+    # min-max scale all parameters.
+    parameters = {
+        p: (v - v.min()) / (v - v.min()).max() for p,v in parameters.items()
+    }
+
+    harmonic_mean = len(parameters) / ( 
+        1. / (np.vstack(
+            list(parameters.values()),
+        )+constant)
+    ).sum(axis=0)
+    
+    return harmonic_mean
+
+
 def tune_hyperparameters_randomizedsearchcv(
     ms: np.ndarray,
     n_splits: int = 5,
     test_size: float = 0.2,
-    random_seed: int = 42,
+    random_state: int = 42,
     nmf_param_grid: Dict[str, Any] = {},
 ) -> None: 
     """ """
-    rng = np.random.default_rng(seed=random_seed)
+    rng = np.random.default_rng(seed=random_state)
     cv_errors = []
 
     for i in range(n_splits):
