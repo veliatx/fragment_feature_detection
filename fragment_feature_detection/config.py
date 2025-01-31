@@ -1,3 +1,4 @@
+
 class AttributeDict(dict):
     """Dictionary with attribute-style access"""
 
@@ -17,8 +18,8 @@ class Config:
 
     discretization = AttributeDict(
         **{
-            'bin_width': "ppm",
-            "mz_low": 200.0, 
+            "bin_width": "ppm",
+            "mz_low": 200.0,
             "mz_high": 2000.0,
             "steps": 2,
             "tolerance": 60.0 / 1e6,
@@ -36,6 +37,7 @@ class Config:
         **{
             "include_gpf_bounds": True,
             "filter_spectra": False,
+            "filter_spectra_percentile": 50
         }
     )
 
@@ -69,3 +71,7 @@ class Config:
             "alpha": 0.1,
         }
     )
+
+
+class Constants:
+    isotope_mu = 1.008

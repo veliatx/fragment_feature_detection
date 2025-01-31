@@ -5,6 +5,7 @@ import h5py
 
 from config import Config
 
+
 class MzDiscretize:
     """A class for discretizing mass-to-charge (m/z) values into bins.
 
@@ -18,6 +19,14 @@ class MzDiscretize:
         mz_high (float): The upper m/z boundary. Defaults to 2000.0.
         steps (int): Number of overlapping bin sets. Defaults to 2.
         tolerance (float): The bin width in either ppm or da units. Defaults to 60.0/1e6.
+
+    Attributes:
+        _bin_width (str): Type of bin width ("ppm" or "da").
+        _mz_low (float): Lower boundary of m/z range.
+        _mz_high (float): Upper boundary of m/z range.
+        _steps (int): Number of overlapping bin sets.
+        _tolerance (float): Width of bins in specified units.
+        _bins (np.ndarray): Array containing bin right edge values, shape (steps, n_bins).
     """
 
     def __init__(
@@ -69,7 +78,7 @@ class MzDiscretize:
             np.ndarray: Array of bin right edge values.
         """
         return self._bins
-    
+
     @property
     def bin_indices(self) -> np.ndarray:
         """Get the indices for all bins across all steps.
@@ -78,15 +87,15 @@ class MzDiscretize:
             np.ndarray: 2D array of bin indices, shape (steps, bins_per_step).
         """
         m = np.repeat(
-            np.arange(self._bins.shape[1])[np.newaxis, ...], 
-            self._steps, 
-            axis=0
+            np.arange(self._bins.shape[1])[np.newaxis, ...], self._steps, axis=0
         )
         m += (np.arange(0, self._bins.shape[0]) * self._bins.shape[1])[..., np.newaxis]
 
         return m
 
-    def indices_to_mz(self, indices: Union[np.ndarray, List[int]], center: bool = False) -> np.ndarray:
+    def indices_to_mz(
+        self, indices: Union[np.ndarray, List[int]], center: bool = False
+    ) -> np.ndarray:
         """Convert bin indices to m/z values.
 
         Args:
@@ -98,9 +107,9 @@ class MzDiscretize:
         """
         if not isinstance(indices, np.ndarray):
             indices = np.array(indices)
-        
+
         indices = indices.astype(int)
-        
+
         if center:
             m = self.bin_center
         else:
@@ -141,10 +150,12 @@ class MzDiscretize:
             min_b = min([len(b) for b in bins])
             bins = np.array([b[:min_b][::-1] for b in bins])
         # Bins reflect right edge, filter bins < self._mz_low
-        bins = bins[:,bins.min(axis=0) > self._mz_low]
+        bins = bins[:, bins.min(axis=0) > self._mz_low]
         self._bins = bins
 
-    def discretize(self, m: np.ndarray, center: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    def discretize(
+        self, m: np.ndarray, center: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Discretize an array of m/z values into bins.
 
         Args:
@@ -173,10 +184,11 @@ class MzDiscretize:
                 np.repeat(np.arange(0, self._steps), m.shape[0]),
                 row_indices.flatten().astype(int),
             ].reshape(self._steps, -1)
-        
-        bin_indices = row_indices + (
-            np.arange(0, self._bins.shape[0]) * self._bins.shape[1]
-        )[..., np.newaxis]
+
+        bin_indices = (
+            row_indices
+            + (np.arange(0, self._bins.shape[0]) * self._bins.shape[1])[..., np.newaxis]
+        )
         return bin_indices, bin
 
     def discretize_mz_array(
@@ -215,14 +227,23 @@ class MzDiscretize:
 
         return disc_m
 
-    @classmethod 
-    def from_config(cls, config: Config = Config) -> 'MzDiscretize':
-        """ """
+    @classmethod
+    def from_config(cls, config: Config = Config) -> "MzDiscretize":
+        """Create a MzDiscretize instance from a configuration object.
+
+        Args:
+            config (Config): Configuration object containing discretization parameters.
+                Defaults to Config.
+
+        Returns:
+            MzDiscretize: New instance initialized with configuration parameters.
+        """
         return cls(**config.discretization)
 
     def dump_h5(
-        self, h5file: Union[str, h5py.File, h5py.Group], 
-        dataset_name: str = 'mz_discretize',
+        self,
+        h5file: Union[str, h5py.File, h5py.Group],
+        dataset_name: str = "mz_discretize",
     ) -> None:
         """Save the MzDiscretize object to an HDF5 file or group.
 
@@ -233,33 +254,32 @@ class MzDiscretize:
 
         # Handle string path vs h5py object
         if isinstance(h5file, str):
-            # with h5py.File(h5file, 'w') as f:
-            f = h5py.File(h5file, 'w')
+            f = h5py.File(h5file, "w")
             grp = f.create_group(dataset_name)
             close_file = True
         else:
             grp = h5file.create_group(dataset_name)
             close_file = False
-        
+
         # Save attributes
-        grp.attrs['bin_width'] = self._bin_width
-        grp.attrs['mz_low'] = self._mz_low
-        grp.attrs['mz_high'] = self._mz_high
-        grp.attrs['steps'] = self._steps
-        grp.attrs['tolerance'] = self._tolerance
-        
+        grp.attrs["bin_width"] = self._bin_width
+        grp.attrs["mz_low"] = self._mz_low
+        grp.attrs["mz_high"] = self._mz_high
+        grp.attrs["steps"] = self._steps
+        grp.attrs["tolerance"] = self._tolerance
+
         # Save bins array
-        grp.create_dataset('bins', data=self._bins)
+        grp.create_dataset("bins", data=self._bins)
 
         if close_file:
             f.close()
 
     @classmethod
     def from_h5(
-        cls, 
+        cls,
         h5file: Union[str, h5py.File, h5py.Group],
-        dataset_name: str = 'mz_discretize',
-    ) -> 'MzDiscretize':
+        dataset_name: str = "mz_discretize",
+    ) -> "MzDiscretize":
         """Load a MzDiscretize object from an HDF5 file or group.
 
         Args:
@@ -271,7 +291,7 @@ class MzDiscretize:
         """
         # Handle string path vs h5py object
         if isinstance(h5file, str):
-            f = h5py.File(h5file, 'r')
+            f = h5py.File(h5file, "r")
             grp = f[dataset_name]
             close_file = True
         else:
@@ -280,15 +300,14 @@ class MzDiscretize:
 
         # Create instance with stored parameters
         obj = cls(
-            bin_width=grp.attrs['bin_width'],
-            mz_low=grp.attrs['mz_low'],
-            mz_high=grp.attrs['mz_high'],
-            steps=grp.attrs['steps'],
-            tolerance=grp.attrs['tolerance']
+            bin_width=grp.attrs["bin_width"],
+            mz_low=grp.attrs["mz_low"],
+            mz_high=grp.attrs["mz_high"],
+            steps=grp.attrs["steps"],
+            tolerance=grp.attrs["tolerance"],
         )
-        
-        # Replace bins with stored array
-        obj._bins = grp['bins'][:]
+
+        obj._bins = grp["bins"][:]
 
         if close_file:
             f.close()

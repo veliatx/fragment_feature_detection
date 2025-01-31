@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 import numpy as np
 from tqdm import tqdm 
@@ -6,7 +6,7 @@ import pandas as pd
 
 import scipy.sparse as sps
 
-from config import Config
+from config import Config, Constants
 
 
 def ms2_df_to_long(
@@ -26,9 +26,9 @@ def ms2_df_to_long(
             mz_array = r['m/zArray']
             intensity_array = r['IntensityArray']
             if config.ms2_preprocessing.filter_spectra:
-                median_intensity = np.median(r['IntensityArray'])
-                mz_array = mz_array[intensity_array > median_intensity]
-                intensity_array = intensity_array[intensity_array > median_intensity]
+                percentile_intensity = np.percentile(r['IntensityArray'], config.ms2_preprocessing.filter_spectra_percentile)
+                mz_array = mz_array[intensity_array > percentile_intensity]
+                intensity_array = intensity_array[intensity_array > percentile_intensity]
             for mz, intensity in zip(mz_array, intensity_array):
                 if config.ms2_preprocessing.include_gpf_bounds:
                     mzs.append([mass, scan_number, retention_time, mz, intensity, r['lowerMass'], r['higherMass']])
@@ -138,6 +138,36 @@ def calculate_nmf_summary(W: np.ndarray, H: np.ndarray) -> Dict[str, float]:
         'fraction_window_component': (W.sum(axis=1) > 0).sum() / W.shape[0],
     }
 
+
+def calculate_theoretical_precursor_monoisotopic_masses(
+    fragments: np.ndarray,
+    charge_states: List[int] = np.arange(1, 4),
+    isotope_mu: float = Constants.isotope_mu,
+) -> np.ndarray:
+    """ """
+    monoisotopic_masses = []
+    for c in charge_states:
+        monoisotopic_masses.append(
+            (fragments * c) - (c - 1) * isotope_mu
+        )
+    monoisotopic_masses = np.concatenate(monoisotopic_masses)
+
+    theoretical_precursor_masses = (monoisotopic_masses[...,np.newaxis]+monoisotopic_masses).flatten()
+
+    return theoretical_precursor_masses
+
+def calculate_mz_from_masses(
+    monoisotopic_masses: np.ndarray,
+    charge_states: List[int] = np.arange(1, 9),
+    isotope_mu: float = Constants.isotope_mu,
+) -> np.ndarray:
+    """ """
+    mz = []
+    for c in charge_states:
+        mz.append(
+            (monoisotopic_masses + ((c-1)*isotope_mu)) / c
+        )
+    return np.concatenate(mz)
 
 
 

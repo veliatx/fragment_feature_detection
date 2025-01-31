@@ -24,6 +24,7 @@ class MS1OnlyMzML(mzml.MzML):
     _use_index = False
     _iterative = False
 
+
 class MzMLParser(mzml.MzML):
     _use_index = False
     _iterative = False 

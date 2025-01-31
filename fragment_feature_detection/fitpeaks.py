@@ -5,6 +5,7 @@ import numpy as np
 import scipy.stats as stats
 from scipy.optimize import curve_fit, minimize
 
+
 def approximate_overlap_curves(
     m1: float,
     s1: float,
@@ -12,7 +13,21 @@ def approximate_overlap_curves(
     s2: float,
     bounds: Tuple[int, int],
 ) -> np.ndarray:
-    """ """
+    """Calculates the overlap between two Gaussian curves.
+
+    Computes the overlap between two Gaussian probability density functions by finding
+    the minimum value at each point and integrating.
+
+    Args:
+        m1 (float): Mean of first Gaussian
+        s1 (float): Standard deviation of first Gaussian
+        m2 (float): Mean of second Gaussian
+        s2 (float): Standard deviation of second Gaussian
+        bounds (Tuple[int, int]): Integration bounds (min, max)
+
+    Returns:
+        np.ndarray: Overlap ratio between the two curves
+    """
     x = np.linspace(*bounds, 10000)
     p1 = stats.norm(m1, s1).pdf(x)
     p2 = stats.norm(m2, s2).pdf(x)
@@ -28,12 +43,12 @@ def gaussian_curve(
     s0: float,
 ) -> np.ndarray:
     """Computes unit-scaled Gaussian curve.
-    
+
     Args:
         x (np.ndarray): Input x values
         x0 (float): Mean of Gaussian
         s0 (float): Standard deviation of Gaussian
-        
+
     Returns:
         (np.ndarray): Gaussian curve values
     """
@@ -49,14 +64,14 @@ def fit_gaussian_elution(
     **kwargs: Dict[str, Any],
 ) -> np.ndarray:
     """Fits Gaussian shape to NMF peak elutions.
-    
+
     Args:
         t (np.ndarray): RT time access
         m (np.ndarray): Input elution profile
         mu_bounds (Tuple[float, float]): Bounds for mean parameter
         sigma_bounds (Tuple[float, float]): Bounds for standard deviation
         clip_width (int): Width to clip profile edges
-        
+
     Returns:
         popt (List[float]): [mean, std] parameters
         pcov (np.ndarray): Covariance matrix
@@ -74,7 +89,7 @@ def fit_gaussian_elution(
 
     m0 = sum(t * m_scale) / sum(m_scale)
     # m0 = sum(m_scale[:, 0] * m_scale[:, 1]) / sum(m_scale[:, 1])
-    s0 = np.sqrt(sum(m_scale * (t - m0)**2 ) / sum(m_scale))
+    s0 = np.sqrt(sum(m_scale * (t - m0) ** 2) / sum(m_scale))
     # s0 = np.sqrt(sum(m_scale[:, 1] * (m_scale[:, 0] - m0) ** 2) / sum(m_scale[:, 1]))
 
     bounds = [[np.NINF, np.NINF], [np.Inf, np.Inf]]
@@ -85,12 +100,16 @@ def fit_gaussian_elution(
         bounds[0][1] = sigma_bounds[0]
         bounds[1][1] = sigma_bounds[1]
 
-    m0 = m0 if not mu_bounds or (
-        m0 < mu_bounds[1] and m0 > mu_bounds[0]
-    ) else mu_bounds[1]
-    s0 = s0 if not sigma_bounds or (
-        s0 < sigma_bounds[1] and s0 > sigma_bounds[0]
-    ) else sigma_bounds[1]
+    m0 = (
+        m0
+        if not mu_bounds or (m0 < mu_bounds[1] and m0 > mu_bounds[0])
+        else mu_bounds[1]
+    )
+    s0 = (
+        s0
+        if not sigma_bounds or (s0 < sigma_bounds[1] and s0 > sigma_bounds[0])
+        else sigma_bounds[1]
+    )
 
     popt, pcov = curve_fit(
         gaussian_curve,
@@ -104,16 +123,29 @@ def fit_gaussian_elution(
 
     return popt, pcov, e
 
+
 def least_squares_with_l1_bounds(
     X: np.ndarray,
     y: np.ndarray,
     alpha: float = 0.1,
-    bounds: Tuple[float, float] = (
-        0.0,
-        1.0,
-    ),
+    bounds: Tuple[float, float] = (0.0, 1.0),
 ) -> np.ndarray:
-    """ """
+    """Performs L1-regularized least squares optimization with bounds.
+
+    Minimizes the objective function:
+    sum((X @ coef - y)^2) + alpha * sum(|coef|)
+    subject to the given bounds constraints on coefficients.
+
+    Args:
+        X (np.ndarray): Feature matrix
+        y (np.ndarray): Target vector
+        alpha (float, optional): L1 regularization strength. Defaults to 0.1
+        bounds (Tuple[float, float], optional): (min, max) bounds for coefficients. 
+            Defaults to (0.0, 1.0)
+
+    Returns:
+        np.ndarray: Optimized coefficient vector
+    """
 
     def objective(coef: np.ndarray) -> float:
         return np.sum((np.dot(X, coef) - y) ** y) + alpha * np.sum(np.abs(coef))
@@ -131,5 +163,3 @@ def least_squares_with_l1_bounds(
     )
 
     return result.x
-
-        
