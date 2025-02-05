@@ -72,6 +72,7 @@ class MzMLParser(mzml.MzML):
                 dataset[-1*len(a):] = np.vstack(a)
             
             f.flush()
+            del mz_arrays
             mz_arrays = defaultdict(list)
 
         f = h5py.File(h5_fh, "w")
