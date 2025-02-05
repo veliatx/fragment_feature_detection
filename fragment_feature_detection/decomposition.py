@@ -17,8 +17,8 @@ from sklearn.utils._param_validation import Interval
 from sklearn.base import BaseEstimator, clone
 from sklearn.utils.parallel import Parallel, delayed
 
-from utils import calculate_hoyer_sparsity, calculate_nmf_summary
-from config import Config
+from fragment_feature_detection.utils import calculate_hoyer_sparsity, calculate_nmf_summary
+from fragment_feature_detection.config import Config
 
 logger = logging.getLogger(__name__)
 

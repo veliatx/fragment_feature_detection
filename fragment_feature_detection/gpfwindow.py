@@ -23,13 +23,14 @@ from sklearn.decomposition import NMF
 
 import scipy.ndimage as ndi
 import scipy.sparse as sps
+import scipy.stats as stats
 from scipy.spatial import distance
 
-from discretization import MzDiscretize
-from utils import pivot_unique_binned_mz_sparse
-from fitpeaks import approximate_overlap_curves, fit_gaussian_elution
-from decomposition import fit_nmf_matrix_custom_init
-from config import Config
+from fragment_feature_detection.discretization import MzDiscretize
+from fragment_feature_detection.utils import pivot_unique_binned_mz_sparse
+from fragment_feature_detection.fitpeaks import approximate_overlap_curves, fit_gaussian_elution
+from fragment_feature_detection.decomposition import fit_nmf_matrix_custom_init
+from fragment_feature_detection.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -1324,14 +1325,60 @@ class MSRun:
 
         return windows
 
+    @classmethod 
+    def from_h5_long(
+        cls: Type["MSRun"],
+        h5_fh: Union[Path, str],
+        gpf_masses: Optional[List[str]] = None,
+        discretize: Optional[MzDiscretize] = None,
+        config: Config = Config,
+    ) -> "MSRun":
+        """ """
+
+        if discretize is None:
+            discretize = MzDiscretize.from_config(config)
+
+        gpfs = []
+
+        with h5py.File(h5_fh, 'r') as f:
+            unique_gpfs = [k for k in f.keys() if 'ms2_long' in f[k].keys()]
+            if gpf_masses is not None:
+                unique_gpfs = [k for k in unique_gpfs if k in gpf_masses]
+
+            unique_gpfs = sorted(unique_gpfs, key=lambda x: float(x))
+            
+            for i, gpf_mass in tqdm(
+                enumerate(unique_gpfs),
+                disable=(not config.tqdm_enabled),
+                total=len(unique_gpfs),
+            ):
+                sub_m = np.array(f[gpf_mass]['ms2_long'])
+
+                gpf = GPFRun.from_undiscretized_long(
+                    float(gpf_mass),
+                    sub_m,
+                    discretize,
+                    config=config,
+                )
+                gpfs.append((i, gpf_mass, gpf))
+
+        msrun = cls()
+        for i, gpf_mass, gpf in gpfs:
+            msrun.add_gpf(i, gpf)
+
+        return msrun
+
     @classmethod
     def from_long(
         cls: Type["MSRun"],
         m: np.ndarray,
-        discretize: MzDiscretize,
+        discretize: Optional[MzDiscretize] = None,
         config: Config = Config,
     ) -> "MSRun":
         """ """
+
+        if discretize is None:
+            discretize = MzDiscretize.from_config(config)
 
         gpfs = []
 
@@ -1515,7 +1562,3 @@ def fit_nmf_matrix_gpfrun(
     
     gpfrun.scan_windows = fit_scan_windows
     gpfrun.collapse_redundant_components()
-
-# def fit_ms1_ms2_feature_matching(
-
-# )

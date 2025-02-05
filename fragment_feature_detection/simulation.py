@@ -3,6 +3,8 @@ from typing import Tuple
 import numpy as np
 from tqdm import tqdm
 
+from fragment_feature_detection.config import Config
+
 def assemble_species(
     min_time: int = 0,
     max_time: int = 10000,

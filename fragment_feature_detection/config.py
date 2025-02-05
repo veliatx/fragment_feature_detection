@@ -69,6 +69,8 @@ class Config:
     feature_matching = AttributeDict(
         **{
             "alpha": 0.1,
+            "c_cutoff": 0.025,
+            "extend_w_fraction": 0.5,
         }
     )
 

@@ -6,7 +6,7 @@ import pandas as pd
 
 import scipy.sparse as sps
 
-from config import Config, Constants
+from fragment_feature_detection.config import Config, Constants
 
 
 def ms2_df_to_long(
@@ -158,7 +158,7 @@ def calculate_theoretical_precursor_monoisotopic_masses(
 
 def calculate_mz_from_masses(
     monoisotopic_masses: np.ndarray,
-    charge_states: List[int] = np.arange(1, 9),
+    charge_states: List[int] = list(np.arange(1, 9)),
     isotope_mu: float = Constants.isotope_mu,
 ) -> np.ndarray:
     """ """
