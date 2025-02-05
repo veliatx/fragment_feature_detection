@@ -27,8 +27,15 @@ import scipy.stats as stats
 from scipy.spatial import distance
 
 from fragment_feature_detection.discretization import MzDiscretize
-from fragment_feature_detection.utils import pivot_unique_binned_mz_sparse
-from fragment_feature_detection.fitpeaks import approximate_overlap_curves, fit_gaussian_elution
+from fragment_feature_detection.utils import (
+    pivot_unique_binned_mz_sparse,
+    fraction_explained_variance,
+)
+from fragment_feature_detection.fitpeaks import (
+    approximate_overlap_curves,
+    fit_gaussian_elution,
+    least_squares_with_l1_bounds,
+)
 from fragment_feature_detection.decomposition import fit_nmf_matrix_custom_init
 from fragment_feature_detection.config import Config
 
@@ -55,6 +62,11 @@ class ScanWindow:
         _m_max (np.ndarray): Maximum intensity in each m/z window.
         _denoise_scans (bool): Flag to enable scan denoising.
         _scale_scans (bool): Flag to enable scan scaling.
+        _ms1_features (List[MS1Feature]): List of MS1 features associated with this window.
+        _component_ms1_coef_matrix (np.ndarray): Matrix of coefficients relating MS1 to MS2 features.
+        _component_ms1_global_exp_var (np.ndarray): Global explained variance for MS1-MS2 matches.
+        _component_ms1_individual_exp_var (np.ndarray): Individual explained variance for each MS1-MS2 match.
+        _is_ms1_features_fit (bool): Whether MS1 features have been fit to MS2 components.
     """
 
     _filter_edge_nscans = 5
@@ -80,6 +92,10 @@ class ScanWindow:
     _is_component_fit = False
 
     _ms1_features = None
+    _component_ms1_coef_matrix = None
+    _component_ms1_global_exp_var = None
+    _component_ms1_individual_exp_var = None
+    _is_ms1_features_fit = False
 
     def __init__(
         self,
@@ -209,13 +225,18 @@ class ScanWindow:
         """ """
         return self._is_fit
 
-    @property 
+    @property
     def is_component_fit(self) -> bool:
         """ """
         return self._is_component_fit
 
     @property
-    def ms1_features(self) -> Tuple[np.ndarray, np.ndarray]:
+    def ms1_features(self) -> List["MS1Feature"]:
+        """ """
+        return self._ms1_features
+
+    @property
+    def ms1_features_information(self) -> Tuple[np.ndarray, np.ndarray]:
         """ """
         if not getattr(self, "_ms1_features", False):
             raise AttributeError("No ms1 features added to this scanwindow.")
@@ -227,6 +248,11 @@ class ScanWindow:
         ms1_feature_name = np.array([f._id for f in self._ms1_features])
 
         return (ms1_elution, ms1_feature_name)
+
+    @property
+    def is_ms1_features_fit(self) -> bool:
+        """ """
+        return self._is_ms1_features_fit
 
     def mask_component(self, component_index) -> None:
         """ """
@@ -439,6 +465,18 @@ class ScanWindow:
             ]
         )
         self._is_component_fit = True
+
+    def set_ms1_ms2_feature_matches(
+        self,
+        coef_matrix: np.ndarray,
+        global_variance_explained: np.ndarray,
+        individual_variance_explained: np.ndarray,
+    ) -> None:
+        """ """
+        self._component_ms1_coef_matrix = coef_matrix
+        self._component_ms1_global_exp_var = global_variance_explained
+        self._component_ms1_individual_exp_var = individual_variance_explained
+        self._is_ms1_features_fit = True
 
     def dump_h5(
         self,
@@ -941,18 +979,18 @@ class GPFRun:
             gpf_high=self._gpf_high,
         )
 
-    @property 
+    @property
     def scan_windows(self) -> List[ScanWindow]:
         """ """
         return self._scan_windows
-    
+
     @scan_windows.setter
     def scan_windows(self, modified_scan_windows: List[ScanWindow]) -> None:
         """ """
         if not all(isinstance(sw, ScanWindow) for sw in modified_scan_windows):
-            raise ValueError('Modified scan windows not correct object.')
+            raise ValueError("Modified scan windows not correct object.")
         if not len(modified_scan_windows) == len(self.scan_windows):
-            raise ValueError('List of modified scan windows incorrect len.')
+            raise ValueError("List of modified scan windows incorrect len.")
         self._scan_windows = modified_scan_windows
 
     def build_scan_windows(
@@ -1054,7 +1092,6 @@ class GPFRun:
     ) -> None:
         """ """
         for sw in self._scan_windows:
-            # sw_fit_mean, sw_fit_sigma = sw.component_fit_parameters
 
             ol_scan_indices = self.get_overlapping_scanwindow_indices(
                 sw.scan_index[0],
@@ -1325,7 +1362,7 @@ class MSRun:
 
         return windows
 
-    @classmethod 
+    @classmethod
     def from_h5_long(
         cls: Type["MSRun"],
         h5_fh: Union[Path, str],
@@ -1340,19 +1377,19 @@ class MSRun:
 
         gpfs = []
 
-        with h5py.File(h5_fh, 'r') as f:
-            unique_gpfs = [k for k in f.keys() if 'ms2_long' in f[k].keys()]
+        with h5py.File(h5_fh, "r") as f:
+            unique_gpfs = [k for k in f.keys() if "ms2_long" in f[k].keys()]
             if gpf_masses is not None:
                 unique_gpfs = [k for k in unique_gpfs if k in gpf_masses]
 
             unique_gpfs = sorted(unique_gpfs, key=lambda x: float(x))
-            
+
             for i, gpf_mass in tqdm(
                 enumerate(unique_gpfs),
                 disable=(not config.tqdm_enabled),
                 total=len(unique_gpfs),
             ):
-                sub_m = np.array(f[gpf_mass]['ms2_long'])
+                sub_m = np.array(f[gpf_mass]["ms2_long"])
 
                 gpf = GPFRun.from_undiscretized_long(
                     float(gpf_mass),
@@ -1533,11 +1570,11 @@ def fit_nmf_matrix_scanwindow(
     )
     w.set_nmf_fit(W, H, model)
 
+
 def fit_nmf_matrix_gpfrun(
     gpfrun: GPFRun,
     n_jobs: int = 8,
-    nmf_kwargs: Dict[str, Any] = Config.nmf,
-    fitpeaks_kwargs: Dict[str, Any] = Config.fitpeaks,
+    config: Config = Config,
 ) -> None:
     """Fit NMF decomposition to all scan windows in a GPF run in parallel.
 
@@ -1547,18 +1584,134 @@ def fit_nmf_matrix_gpfrun(
         nmf_kwargs (Dict[str, Any]): Keyword arguments for NMF fitting.
         fitpeaks_kwargs (Dict[str, Any]): Keyword arguments for peak fitting.
     """
+
     def modify_fit_scanwindow(sw: ScanWindow) -> ScanWindow:
         """ """
         if not sw.is_filtered:
             sw.filter_scans()
-            fit_nmf_matrix_scanwindow(sw, **nmf_kwargs)
-            fit_scanwindow(sw, **fitpeaks_kwargs)
-        return sw 
-    
-    with Parallel(n_jobs=n_jobs, pre_dispatch='2*n_jobs') as parallel:
+        fit_nmf_matrix_scanwindow(sw, **config.nmf)
+        fit_scanwindow(sw, **config.fitpeaks)
+        return sw
+
+    with Parallel(n_jobs=n_jobs, pre_dispatch="2*n_jobs") as parallel:
         fit_scan_windows = parallel(
-            delayed(modify_fit_scanwindow)(sw) for sw in gpfrun.scan_windows 
+            delayed(modify_fit_scanwindow)(sw)
+            for sw in tqdm(
+                gpfrun.scan_windows,
+                disable=(not config.tqdm_enabled),
+                total=len(gpfrun.scan_windows),
+            )
         )
-    
+
     gpfrun.scan_windows = fit_scan_windows
     gpfrun.collapse_redundant_components()
+
+
+def fit_ms1_ms2_feature_matching_scanwindow(
+    w: ScanWindow,
+    **feature_matching_kwargs: Dict[str, Any],
+) -> None:
+    """Match MS1 features to MS2 components within a scan window.
+
+    Args:
+        w (ScanWindow): Scan window object containing MS1 and MS2 data
+        **feature_matching_kwargs: Keyword arguments for feature matching including:
+            alpha (float): L1 regularization parameter
+            extend_w_fraction (float): Fraction to extend component width
+            c_cutoff (float): Minimum coefficient threshold
+    """
+    alpha = feature_matching_kwargs.get("alpha")
+    extend_w_fraction = feature_matching_kwargs.get("extend_w_fraction")
+    c_cutoff = feature_matching_kwargs.get("c_cutoff")
+
+    sw_fit_mean, sw_fit_sigma = w.component_fit_parameters
+    ms1_elution_matrix, ms1_feature_name = w.ms1_features_information
+    rt = w.retention_time
+
+    ms1_ms2_feature_match = np.zeros(
+        (
+            w.component_indices.shape[0],
+            ms1_feature_name.shape[0],
+        )
+    )
+    global_ms2_explained_variance = np.zeros((w.component_indices.shape[0]))
+    individual_ms2_explained_variance = np.zeros(
+        (
+            w.component_indices.shape[0],
+            ms1_feature_name.shape[0],
+        )
+    )
+
+    for i, s in enumerate(w.component_indices):
+        # Pull 99% range of normal distribution centered around fit parameters.
+        w_ci = stats.norm.interval(0.99, loc=sw_fit_mean[i], scale=sw_fit_sigma[i])
+        # Extend this range by extend_w_fraction.
+        w_low = w_ci[0] - (extend_w_fraction * (w_ci[1] - w_ci[0]))
+        w_high = w_ci[1] + (extend_w_fraction * (w_ci[1] - w_ci[0]))
+        idx_low = max(np.searchsorted(rt, w_low, side="left") - 1, 0)
+        idx_high = min(np.searchsorted(rt, w_high, side="right"), rt.shape[0] - 1)
+
+        sub_ms2 = w.w[idx_low:idx_high, i].flatten()
+        sub_ms2 = sub_ms2 / np.linalg.norm(sub_ms2)
+        sub_ms1_keep = ms1_elution_matrix[idx_low:idx_high]
+        ms1_keep_mask = sub_ms1_keep.sum(axis=0) > 0
+        sub_ms1_keep = sub_ms1_keep[:, ms1_keep_mask] / np.linalg.norm(
+            sub_ms1_keep[:, ms1_keep_mask], axis=0
+        )
+
+        if sub_ms1_keep.size == 0:
+            ms1_ms2_feature_match[i, :] = 0.0
+            continue
+
+        coef = least_squares_with_l1_bounds(sub_ms1_keep, sub_ms2, alpha=alpha)
+        keep_coef = ~np.isclose(coef, 0.0) & (coef > c_cutoff)
+        coef[~keep_coef] = 0.0
+
+        ms1_ms2_feature_match[i, ms1_keep_mask] = coef
+
+        global_ms2_explained_variance[i] = fraction_explained_variance(
+            sub_ms1_keep, sub_ms2, coef
+        )
+        individual_ms2_explained_variance[i, keep_coef] = np.array(
+            [
+                fraction_explained_variance(sub_ms1_keep[c], sub_ms2, coef[c])
+                for c in range(coef.shape[0])
+            ]
+        )
+
+    w.set_ms1_ms2_feature_matches(
+        ms1_ms2_feature_match,
+        global_ms2_explained_variance,
+        individual_ms2_explained_variance,
+    )
+
+
+def fit_ms1_ms2_feature_matching_gpfrun(
+    gpfrun: GPFRun,
+    n_jobs: int = 8,
+    config: Config = Config,
+) -> None:
+    """Match MS1 features to MS2 components across all scan windows in a GPF run.
+
+    Args:
+        gpfrun (GPFRun): GPF run object containing scan windows
+        n_jobs (int): Number of parallel jobs to run
+        config (Config): Configuration object containing feature matching parameters
+    """
+
+    def modify_match_scanwindow(sw: ScanWindow) -> ScanWindow:
+        """ """
+        fit_ms1_ms2_feature_matching_scanwindow(sw, **config.feature_matchinga)
+        return sw
+
+    with Parallel(n_jobs=n_jobs, pre_dispatch="2*n_jobs") as parallel:
+        fit_scan_windows = parallel(
+            delayed(modify_match_scanwindow)(sw)
+            for sw in tqdm(
+                gpfrun.scan_windows,
+                disable=(not config.tqdm_enabled),
+                total=len(gpfrun.scan_windows),
+            )
+        )
+
+    gpfrun.scan_windows = fit_scan_windows
