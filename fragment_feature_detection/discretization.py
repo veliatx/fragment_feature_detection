@@ -228,7 +228,7 @@ class MzDiscretize:
         return disc_m
 
     @classmethod
-    def from_config(cls, config: Config = Config) -> "MzDiscretize":
+    def from_config(cls, config: Config = Config()) -> "MzDiscretize":
         """Create a MzDiscretize instance from a configuration object.
 
         Args:

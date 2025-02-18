@@ -140,7 +140,7 @@ def least_squares_with_l1_bounds(
         X (np.ndarray): Feature matrix
         y (np.ndarray): Target vector
         alpha (float, optional): L1 regularization strength. Defaults to 0.1
-        bounds (Tuple[float, float], optional): (min, max) bounds for coefficients. 
+        bounds (Tuple[float, float], optional): (min, max) bounds for coefficients.
             Defaults to (0.0, 1.0)
 
     Returns:

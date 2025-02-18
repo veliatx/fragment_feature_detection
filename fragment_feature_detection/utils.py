@@ -11,7 +11,7 @@ from fragment_feature_detection.config import Config, Constants
 
 def ms2_df_to_long(
     df: pd.DataFrame,
-    config: Config = Config,
+    config: Config = Config(),
 ) -> np.ndarray:
     """ """
 
