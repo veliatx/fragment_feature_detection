@@ -27,7 +27,7 @@ def arg_logger(f):
     return func
 
 
-def configure_logger(fw: Optional[Callable]=None):
+def configure_logger(fw: Optional[Callable] = None):
     def decorator(f: Callable):
         @functools.wraps(fw if fw else f)
         def func(*args, **kwargs):
@@ -53,8 +53,9 @@ def configure_logger(fw: Optional[Callable]=None):
                 file_handler.setFormatter(stream_handler.formatter)
             logger.addHandler(file_handler)
             return f(*args, **kwargs)
+
         return func
-    
+
     return decorator
 
 
@@ -67,14 +68,15 @@ def main():
 @arg_logger
 def example() -> None:
     """
-    Example func. 
+    Example func.
 
-    Args: 
+    Args:
         None
     Returns:
         None
     """
     pass
+
 
 @main.command("example")
 @click.option("--arg", help="")

@@ -3,6 +3,9 @@ from typing import Tuple
 import numpy as np
 from tqdm import tqdm
 
+from fragment_feature_detection.config import Config
+
+
 def assemble_species(
     min_time: int = 0,
     max_time: int = 10000,
@@ -31,7 +34,12 @@ def assemble_species(
 
     species_ids = np.array([], dtype=int)
     species = np.array([])
-    species_info = np.empty((0, 4,))
+    species_info = np.empty(
+        (
+            0,
+            4,
+        )
+    )
 
     for i in tqdm(range(n_species)):
         loc = rng.uniform(min_time, max_time)

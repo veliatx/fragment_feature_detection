@@ -17,8 +17,11 @@ from sklearn.utils._param_validation import Interval
 from sklearn.base import BaseEstimator, clone
 from sklearn.utils.parallel import Parallel, delayed
 
-from utils import calculate_hoyer_sparsity, calculate_nmf_summary
-from config import Config
+from fragment_feature_detection.utils import (
+    calculate_hoyer_sparsity,
+    calculate_nmf_summary,
+)
+from fragment_feature_detection.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +39,7 @@ _FIT_AND_SCORE = [
 
 class OptimizationParameters:
     """Parameters for optimizing NMF decomposition.
-    
+
     This class handles optimization parameters and scoring for NMF decomposition,
     including component counts, scan widths, and error metrics.
 
@@ -55,7 +58,7 @@ class OptimizationParameters:
     _component_sigma = 3.0
     _error = "l1"
 
-    def __init__(self, error: Literal["l1", "l2"] = 'l1'):
+    def __init__(self, error: Literal["l1", "l2"] = "l1"):
         """ """
         self._error = error
         self.set_params()
@@ -75,7 +78,9 @@ class OptimizationParameters:
             # 'fraction_window_component': 0.0,
         }
 
-    def score(self, param: str, value: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    def score(
+        self, param: str, value: Union[float, np.ndarray]
+    ) -> Union[float, np.ndarray]:
         """ """
         if param in self._scores.keys():
             if self._error == "l1":
@@ -85,14 +90,14 @@ class OptimizationParameters:
         return value
 
     @classmethod
-    def from_config(cls, config: Config = Config) -> "OptimizationParameters":
+    def from_config(cls, config: Config = Config()) -> "OptimizationParameters":
         """ """
         return cls()
 
 
 class MzBinMaskingSplitter:
     """Custom splitter that randomly masks bins in scan windows for cross-validation.
-    
+
     This splitter creates train/test splits by masking random mass-to-charge (m/z) bins
     in scan windows, allowing evaluation of NMF reconstruction performance.
 
@@ -174,7 +179,7 @@ class MzBinMaskingSplitter:
 
 class MzBinSampleSplitter:
     """Custom splitter that samples scans in scan windows for cross-validation.
-    
+
     This splitter creates train/test splits by randomly sampling entire scans
     from scan windows, allowing evaluation of NMF reconstruction performance.
 
@@ -239,7 +244,7 @@ class MzBinSampleSplitter:
 
 class NMFMaskWrapper(BaseEstimator):
     """Wrapper for NMF that handles masked cross-validation.
-    
+
     This class wraps NMF models to handle masked cross-validation splits,
     calculating various performance metrics across splits.
 
@@ -401,13 +406,13 @@ class NMFMaskWrapper(BaseEstimator):
 
 class RandomizedSearchReconstructionCV(BaseSearchCV):
     """Cross-validation with randomized parameter search for NMF reconstruction.
-    
+
     Performs randomized search over parameter spaces for NMF models, evaluating
     reconstruction performance through cross-validation.
 
     Args:
         estimator: NMF estimator to optimize
-        param_distributions: Dictionary with parameters names (string) as keys and 
+        param_distributions: Dictionary with parameters names (string) as keys and
             distributions or lists of parameters to try
         n_iter (int): Number of parameter settings sampled
         scoring: Strategy to evaluate predictions on the test set
@@ -549,7 +554,7 @@ class RandomizedSearchReconstructionCV(BaseSearchCV):
 
 class OptunaSearchReconstructionCV(BaseSearchCV):
     """Cross-validation with Optuna-based parameter search for NMF reconstruction.
-    
+
     Uses Optuna for hyperparameter optimization of NMF models, supporting
     multi-objective optimization and pruning of poor parameter combinations.
 
@@ -917,7 +922,7 @@ def fit_nmf_matrix_custom_init(
         m (np.ndarray): Input data matrix
         n_components (int): Number of components to extract
         alpha_W (float): L1/L2 regularization parameter for W matrix
-        alpha_H (float): L1/L2 regularization parameter for H matrix 
+        alpha_H (float): L1/L2 regularization parameter for H matrix
         l1_ratio (float): Ratio of L1 vs L2 regularization
         max_iter (int): Maximum number of iterations
         solver (str): NMF solver to use
@@ -929,7 +934,7 @@ def fit_nmf_matrix_custom_init(
         **nmf_kwargs (Dict[str, Any]): Additional keyword arguments for NMF
 
     Returns:
-        Tuple[np.ndarray, np.ndarray, Optional[NMF]]: 
+        Tuple[np.ndarray, np.ndarray, Optional[NMF]]:
             - W matrix (components)
             - H matrix (activations)
             - Fitted NMF model (if return_model=True)
@@ -988,7 +993,7 @@ def pick_parameters_optuna_harmonic_mean(
 
     parameters = {p: bcv.cv_results[f"mean_test_{p}"] for p in parameter_names}
 
-    # reset params if the target value was different than reported here. 
+    # reset params if the target value was different than reported here.
     parameters = {k: optimization_parameters.score(k, v) for k, v in parameters.items()}
 
     # min-max scale all parameters.
@@ -1015,4 +1020,4 @@ def tune_hyperparameters_randomizedsearchcv(
     nmf_param_grid: Dict[str, Any] = {},
 ) -> None:
     """ """
-    pass 
+    pass
