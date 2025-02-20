@@ -7,6 +7,8 @@ import functools
 
 import click
 
+from fragment_feature_detection.converter import MzMLParser
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s",
@@ -84,3 +86,23 @@ def example() -> None:
 def _raw_to_mzml(*args: Any, **kwargs: Any) -> None:
     """ """
     example(*args, **kwargs)
+
+
+@arg_logger
+def convert_mzml_h5long(
+    mzml_fh: Union[Path, str],
+    out_loc: Optional[Path, str] = None,
+) -> None:
+    """ """
+    mzml_fh = Path(mzml_fh)
+    if not out_loc:
+        out_loc = Path(mzml_fh).parent
+    else:
+        out_loc = Path(out_loc)
+
+    logger.info(f'Beginning conversion sample {mzml_fh} to h5 long...')
+    MzMLParser.to_ms2_h5(
+        mzml_fh,
+        h5_fh = out_loc / mzml_fh.with_suffix('.h5').name,   
+    )
+    

@@ -30,6 +30,11 @@ dependencies = [
     "black==24.8.0",
     "optuna==4.2.0",
 ]
+[project.scripts]
+ffd = "fragment_feature_detection.cli:main"
+
 
 [tool.setuptools]
 packages = ["fragment_feature_detection"]
+
+

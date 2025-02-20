@@ -1623,7 +1623,7 @@ class MSRun:
 
         windows = []
 
-        for gpf_index in self._gpf_runs:
+        for gpf_index in tqdm(self._gpf_runs, disable=(not config.tqdm_enabled)):
             gpf = self.get_gpf(gpf_index)
             scan_windows = gpf.sample_scan_windows(
                 window_sampling_fraction=config.tuning.window_sampling_fraction,
@@ -2098,5 +2098,5 @@ def fit_ms1_ms2_feature_matching_gpfrun(
                 total=len(gpfrun.scan_windows),
             )
         )
-
+    
     gpfrun.scan_windows = fit_scan_windows

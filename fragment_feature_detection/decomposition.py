@@ -92,7 +92,15 @@ class OptimizationParameters:
     @classmethod
     def from_config(cls, config: Config = Config()) -> "OptimizationParameters":
         """ """
-        return cls()
+        obj = cls()
+        
+        obj._components_in_window = config.tuning.components_in_window
+        obj._components = config.tuning.n_components
+        obj._scan_width = config.scan_filter.scan_width
+        # component_sigma is scale paramter of normal distribution of component in units of scans, not in RT
+        obj._component_sigma = config.tuning.component_sigma 
+        
+        return obj
 
 
 class MzBinMaskingSplitter:
@@ -669,6 +677,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
 
             def objective(trial: optuna.Trial):
                 """ """
+                results = None
                 try:
 
                     params = {}
@@ -721,8 +730,10 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                     return np.nanmean([r["test_scores"] for r in results])
 
                 except Exception as e:
-                    print([r["fit_error"] for r in results])
+                    if results is not None:
+                        print([r["fit_error"] for r in results])
                     print(e)
+                    logger.exception(e)
                     trial.set_user_attr("error", str(e))
                     trial.set_user_attr(
                         "out",
@@ -741,7 +752,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                 )
                 study.optimize(objective, n_trials=n_trials)
 
-            with tempfile.NamedTemporaryFile(dir="/dev/shm", suffix=".db") as temp_db:
+            with tempfile.NamedTemporaryFile(dir="/tmp/", suffix=".db") as temp_db:
                 storage_string = f"sqlite:///{temp_db.name}"
                 study = optuna.create_study(
                     storage=storage_string,
@@ -1013,7 +1024,7 @@ def pick_parameters_optuna_harmonic_mean(
 
 
 def tune_hyperparameters_randomizedsearchcv(
-    ms: np.ndarray,
+    ms: List[np.ndarray],
     n_splits: int = 5,
     test_size: float = 0.2,
     random_state: int = 42,
@@ -1021,3 +1032,38 @@ def tune_hyperparameters_randomizedsearchcv(
 ) -> None:
     """ """
     pass
+
+def tune_hyperparameters_optunasearchcv(
+    ms: List[np.ndarray],
+    config: Config = Config(),
+) -> None:
+    """ """
+
+    op = OptimizationParameters.from_config(my_config)
+    
+    ocv = OptunaSearchReconstructionCV(
+        NMFMaskWrapper(
+            splitter_type=config.tuning.splitter_type,
+            mask_fraction=config.tuning.test_fraction,
+            n_components=config.tuning.n_components,
+            n_splits=config.tuning.n_splits,
+            l1_ratio=0.5,
+            alpha_W=0.01,
+            alpha_H=0.01,
+        ),
+        my_config.tuning.optuna_hyperparameter_grid,
+        objective_params=config.tuning.objective_params,
+        n_iter=config.tuning.n_iter,
+        random_state=config.random_seed,
+        return_train_score=True,
+        n_jobs=config.tuning.n_jobs,
+        prune_bad_parameter_spaces=False,
+        optimization_parameters=op,
+    )
+
+    logger.disabled = True    
+
+    
+
+    
+    

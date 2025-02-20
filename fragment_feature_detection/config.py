@@ -1,3 +1,11 @@
+import logging
+from pathlib import Path 
+from typing import * 
+
+import configparser
+
+
+
 class AttributeDict(dict):
     """Dictionary with attribute-style access"""
 
@@ -45,6 +53,26 @@ class Config:
         **{
             "window_sampling_fraction": 0.0125,
             "exclude_scan_window_edges": 10,
+            "optuna_hyperparameter_grid": {
+                'l1_ratio': (0.1, 0.9),
+                'alpha_W': (0.0001, 0.1, 'log'),
+                'alpha_H': (0.0001, 0.1, 'log'),
+            },
+            "objective_params": [
+                'test_reconstruction_errors',
+                'neglog_ratio_train_test_reconstruction_error',
+                'sample_orthogonality',
+                'weight_orthogonality',
+                'fraction_window_component',
+            ],
+            "n_iter": 500,
+            "n_jobs": 4,
+            "n_components": 20,
+            "components_in_window": 8.0,
+            "component_sigma": 3.0,
+            "n_splits": 3,
+            "test_fraction": 0.2,
+            "splitter_type": "Mask",
         }
     )
 
@@ -104,6 +132,64 @@ class Config:
                     items.append(f"{key}={repr(value)}")
         attribute_sep = "\n  "
         return f"{self.__class__.__name__}(\n  {(', '+attribute_sep).join(items)}\n)"
+
+    @classmethod
+    def from_ini(cls, ini_path: Union[str, Path]):
+        """Load configuration from an INI file.
+        
+        Args:
+            ini_path (str): Path to the INI file
+            
+        Returns:
+            Config: New config instance with values from INI file
+        """
+        config = configparser.ConfigParser()
+        config.read(ini_path)
+        
+        instance = cls()
+        
+        for section in config.sections():
+            if hasattr(instance, section):
+                section_dict = getattr(instance, section)
+                if isinstance(section_dict, AttributeDict):
+                    # Update existing AttributeDict sections
+                    for key, value in config[section].items():
+                        # Convert string values to appropriate types
+                        try:
+                            typed_value = eval(value)
+                        except:
+                            typed_value = value
+                        section_dict[key] = typed_value
+                else:
+                    # Update simple attributes
+                    try:
+                        typed_value = eval(config[section][section])
+                    except:
+                        typed_value = config[section][section]
+                    setattr(instance, section, typed_value)
+                    
+        return instance
+
+    def to_ini(self, ini_path: Union[Path, str]):
+        """Save current configuration to an INI file.
+        
+        Args:
+            ini_path (str): Path where to save the INI file
+        """
+        config = configparser.ConfigParser()
+        
+        attributes = dict(**vars(self.__class__))
+        attributes.update(vars(self))
+        
+        for key, value in attributes.items():
+            if not key.startswith('_'):
+                if isinstance(value, AttributeDict):
+                    config[key] = dict(value)
+                else:
+                    config[key] = {'value': repr(value)}
+                    
+        with open(ini_path, 'w') as f:
+            config.write(f)
 
 
 class Constants:
