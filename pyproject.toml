@@ -35,6 +35,6 @@ ffd = "fragment_feature_detection.cli:main"
 
 
 [tool.setuptools]
-packages = ["fragment_feature_detection"]
+packages = ["fragment_feature_detection", "fragment_feature_detection.containers"]
 
 
