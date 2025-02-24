@@ -148,7 +148,7 @@ def least_squares_with_l1_bounds(
     """
 
     def objective(coef: np.ndarray) -> float:
-        return np.sum((np.dot(X, coef) - y) ** y) + alpha * np.sum(np.abs(coef))
+        return np.sum((np.dot(X, coef) - y) ** 2) + alpha * np.sum(np.abs(coef))
 
     coef_init = np.zeros(X.shape[1])
 

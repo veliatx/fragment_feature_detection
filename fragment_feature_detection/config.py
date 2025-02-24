@@ -1,14 +1,34 @@
+import logging
+from pathlib import Path 
+from typing import * 
+
+import configparser
+
+def format_logger(logger: logging.Logger, level: int = logging.INFO) -> None:
+    """Configure basic formatting for a logger.
+    
+    Args:
+        logger: Logger instance to configure
+    """
+    formatter = logging.Formatter(
+        fmt="[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s"
+    )
+    for handler in logger.handlers:
+        handler.setFormatter(formatter)
+    
+    logger.setLevel(level)
+
 class AttributeDict(dict):
     """Dictionary with attribute-style access"""
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> Any:
         """ """
         try:
             return self[item]
         except KeyError:
             raise AttributeError(f"'{type(self).__name__}' has no attribute '{item}'")
 
-    def __setattr__(self, key, value):
+    def __setattr__(self, key: Any, value: Any) -> None:
         """ """
         self[key] = value
 
@@ -43,8 +63,35 @@ class Config:
 
     tuning = AttributeDict(
         **{
+            "optuna": True,
+            "window_sampling_n": 50,
             "window_sampling_fraction": 0.0125,
             "exclude_scan_window_edges": 10,
+            "optuna_hyperparameter_grid": {
+                'l1_ratio': (0.1, 0.9),
+                'alpha_W': (0.0001, 0.1, 'log'),
+                'alpha_H': (0.0001, 0.1, 'log'),
+            },
+            "hyperparameter_grid": {
+                'alpha_W': [0.0001, 0.0005, 0.001, 0.005, 0.01],
+                'alpha_H': [0.0001, 0.0005, 0.001, 0.005, 0.01],
+                'l1_ratio': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+            },
+            "objective_params": [
+                'test_reconstruction_errors',
+                'neglog_ratio_train_test_reconstruction_error',
+                'sample_orthogonality',
+                'weight_orthogonality',
+                'fraction_window_component',
+            ],
+            "n_iter": 500,
+            "n_jobs": 4,
+            "n_components": 20,
+            "components_in_window": 8.0,
+            "component_sigma": 3.0,
+            "n_splits": 3,
+            "test_fraction": 0.2,
+            "splitter_type": "Mask",
         }
     )
 
@@ -70,7 +117,7 @@ class Config:
             "alpha_H": 0.0375,
             "l1_ratio": 0.75,
             "max_iter": 500,
-            "solver": "cd",  # "mu",
+            "solver": "cd",
         }
     )
 
@@ -104,6 +151,68 @@ class Config:
                     items.append(f"{key}={repr(value)}")
         attribute_sep = "\n  "
         return f"{self.__class__.__name__}(\n  {(', '+attribute_sep).join(items)}\n)"
+
+    @classmethod
+    def from_ini(cls, ini_path: Union[str, Path]) -> "Config":
+        """Load configuration from an INI file.
+        
+        Args:
+            ini_path (str): Path to the INI file
+            
+        Returns:
+            Config: New config instance with values from INI file
+        """
+        config = configparser.ConfigParser()
+        config.optionxform = str
+        config.read(ini_path)
+        
+        instance = cls()
+        
+        for section in config.sections():
+            if hasattr(instance, section):
+                section_dict = getattr(instance, section)
+                # Update existing AttributeDict sections
+                for key, value in config[section].items():
+                    # Convert string values to appropriate types
+                    try:
+                        typed_value = eval(value)
+                    except:
+                        typed_value = value
+                    section_dict[key] = typed_value
+            else:
+                # Is general setting section:
+                for key, value in config[section].items():
+                    try:
+                        typed_value = eval(value)
+                    except:
+                        typed_value = value
+                    setattr(instance, key, typed_value)
+                    
+        return instance
+
+    def to_ini(self, ini_path: Union[Path, str]) -> None:
+        """Save current configuration to an INI file.
+        
+        Args:
+            ini_path (str): Path where to save the INI file
+        """
+        config = configparser.ConfigParser()
+        
+        attributes = dict(**vars(self.__class__))
+        attributes.update(vars(self))
+        
+        config['general'] = {}
+        for key, value in attributes.items():
+            if not key.startswith('_') and not isinstance(value, classmethod) and not callable(value):
+                if isinstance(value, AttributeDict):
+                    config[key] = {}
+                    for k, v in value.items():
+                        config[key][k] = repr(v)
+                else:
+                    config['general'][key] = repr(value)
+                            
+        with open(ini_path, 'w') as f:
+            config.write(f)
 
 
 class Constants:
