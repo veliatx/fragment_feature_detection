@@ -13,7 +13,18 @@ def ms2_df_to_long(
     df: pd.DataFrame,
     config: Config = Config(),
 ) -> np.ndarray:
-    """ """
+    """Converts MS2 DataFrame to a long-format numpy array.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing MS2 data with columns for MS2TargetMass,
+            RetentionTime, ScanNum, m/zArray, and IntensityArray
+        config (Config, optional): Configuration object. Defaults to Config()
+
+    Returns:
+        np.ndarray: Array with columns [mass, scan_number, retention_time, mz, intensity]
+            or [mass, scan_number, retention_time, mz, intensity, lower_mass, higher_mass]
+            if config.ms2_preprocessing.include_gpf_bounds is True
+    """
 
     mz_arrays = []
 
@@ -92,7 +103,20 @@ def pivot_unique_binned_mz_sparse(
     scan_index: int = 1,
     intensity_index: int = 4,
 ) -> Tuple[sps.csr_matrix, np.ndarray, np.ndarray]:
-    """ """
+    """Efficiently pivots binned mass spectrometry data into a sparse scan-mz-intensity matrix.
+
+    Args:
+        m (np.ndarray): Output array from overlapping_discretize_bins
+        mz_bin_index (int, optional): Column index for mz bin values. Defaults to 5
+        scan_index (int, optional): Column index for scan numbers. Defaults to 1
+        intensity_index (int, optional): Column index for intensity values. Defaults to 4
+
+    Returns:
+        Tuple containing:
+            sps.csr_matrix: Sparse matrix of shape (n_scans, n_mz_bins) containing intensities
+            np.ndarray: Array of unique scan numbers
+            np.ndarray: Array of unique mz bin values
+    """
     unique_scans, scans_pos = np.unique(m[:, scan_index], return_inverse=True)
     unique_mz, mz_pos = np.unique(m[:, mz_bin_index], return_inverse=True)
 
@@ -106,7 +130,17 @@ def pivot_unique_binned_mz_sparse(
 
 
 def calculate_hoyer_sparsity(m: np.ndarray) -> float:
-    """ """
+    """Calculates the Hoyer sparsity measure of an array.
+    
+    The Hoyer sparsity measure is based on the relationship between L1 and L2 norms.
+    Returns a value between 0 (dense) and 1 (sparse).
+
+    Args:
+        m (np.ndarray): Input array
+
+    Returns:
+        float: Hoyer sparsity measure
+    """
     if np.allclose(m, np.zeros(m.shape)):
         return 0.0
 
@@ -117,7 +151,17 @@ def calculate_hoyer_sparsity(m: np.ndarray) -> float:
 
 
 def calculate_simple_sparsity(m: np.ndarray) -> float:
-    """ """
+    """Calculates the simple sparsity measure of an array.
+    
+    Simple sparsity is defined as the fraction of non-zero elements.
+    Returns a value between 0 (dense) and 1 (sparse).
+
+    Args:
+        m (np.ndarray): Input array
+
+    Returns:
+        float: Simple sparsity measure
+    """
     if np.allclose(m, np.zeros(m.shape)):
         return 0.0
 
@@ -125,7 +169,21 @@ def calculate_simple_sparsity(m: np.ndarray) -> float:
 
 
 def calculate_nmf_summary(W: np.ndarray, H: np.ndarray) -> Dict[str, float]:
-    """ """
+    """Calculates summary statistics for Non-negative Matrix Factorization results.
+
+    Args:
+        W (np.ndarray): Weight matrix from NMF
+        H (np.ndarray): Feature matrix from NMF
+
+    Returns:
+        Dict[str, float]: Dictionary containing:
+            - weight_sparsity: Average Hoyer sparsity of weight matrix columns
+            - sample_sparsity: Average Hoyer sparsity of feature matrix rows
+            - weight_deviation_identity: Deviation from identity matrix for weights
+            - sample_deviation_identity: Deviation from identity matrix for features
+            - nonzero_component_fraction: Fraction of components with non-zero weights
+            - fraction_window_component: Fraction of windows with non-zero components
+    """
     non_zero_components = (~np.isclose(W.sum(axis=0), 0.0)) & (
         ~np.isclose(H.sum(axis=1), 0.0)
     )
@@ -181,7 +239,16 @@ def fraction_explained_variance(
     y: np.ndarray,
     coef: np.ndarray,
 ) -> float:
-    """ """
+    """Calculates the fraction of variance explained by a linear model.
+
+    Args:
+        X (np.ndarray): Feature matrix
+        y (np.ndarray): Target values
+        coef (np.ndarray): Model coefficients
+
+    Returns:
+        float: R-squared value representing fraction of explained variance
+    """
     return 1 - (np.sum((y - np.dot(X, coef)) ** 2) / np.sum((y - y.mean()) ** 2))
 
 
@@ -190,7 +257,18 @@ def calculate_theoretical_precursor_monoisotopic_masses(
     charge_states: List[int] = np.arange(1, 4),
     isotope_mu: float = Constants.isotope_mu,
 ) -> np.ndarray:
-    """ """
+    """Calculates theoretical precursor monoisotopic masses from fragment masses.
+
+    Args:
+        fragments (np.ndarray): Array of fragment masses
+        charge_states (List[int], optional): List of charge states to consider. 
+            Defaults to [1, 2, 3]
+        isotope_mu (float, optional): Mass difference between isotopes. 
+            Defaults to Constants.isotope_mu
+
+    Returns:
+        np.ndarray: Array of theoretical precursor monoisotopic masses
+    """
     monoisotopic_masses = []
     for c in charge_states:
         monoisotopic_masses.append((fragments * c) - (c - 1) * isotope_mu)
@@ -208,7 +286,18 @@ def calculate_mz_from_masses(
     charge_states: List[int] = list(np.arange(1, 9)),
     isotope_mu: float = Constants.isotope_mu,
 ) -> np.ndarray:
-    """ """
+    """Calculates m/z values from monoisotopic masses for different charge states.
+
+    Args:
+        monoisotopic_masses (np.ndarray): Array of monoisotopic masses
+        charge_states (List[int], optional): List of charge states to consider. 
+            Defaults to [1, 2, ..., 8]
+        isotope_mu (float, optional): Mass difference between isotopes. 
+            Defaults to Constants.isotope_mu
+
+    Returns:
+        np.ndarray: Array of m/z values for all combinations of masses and charge states
+    """
     mz = []
     for c in charge_states:
         mz.append((monoisotopic_masses + ((c - 1) * isotope_mu)) / c)
