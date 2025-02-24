@@ -3,7 +3,7 @@ from typing import Literal, Tuple, Union, List, Dict, Any
 import numpy as np
 import h5py
 
-from config import Config
+from fragment_feature_detection.config import Config
 
 
 class MzDiscretize:
@@ -228,7 +228,7 @@ class MzDiscretize:
         return disc_m
 
     @classmethod
-    def from_config(cls, config: Config = Config) -> "MzDiscretize":
+    def from_config(cls, config: Config = Config()) -> "MzDiscretize":
         """Create a MzDiscretize instance from a configuration object.
 
         Args:
