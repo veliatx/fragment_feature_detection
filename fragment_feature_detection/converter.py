@@ -72,60 +72,60 @@ class MzMLParser(mzml.MzML):
             del mz_arrays
             mz_arrays = defaultdict(list)
 
-        f = h5py.File(h5_fh, "w")
+        with h5py.File(h5_fh, "w") as f:
 
-        mz_arrays = defaultdict(list)
+            mz_arrays = defaultdict(list)
 
-        with tqdm(disable=(not config.tqdm_enabled)) as pbar:
-            while True:
-                try:
-                    scan = cls.parse_scan(next(obj), keep_level=2)
-                    mz_array = scan["m/zArray"]
-                    intensity_array = scan["IntensityArray"]
-                    mask = np.isfinite(mz_array) & np.isfinite(intensity_array)
-                    mz_array = mz_array[mask]
-                    intensity_array = intensity_array[mask]
-                    if config.ms2_preprocessing.filter_spectra:
-                        percentile_intensity = np.percentile(
-                            scan["IntensityArray"],
-                            config.ms2_preprocessing.filter_spectra_percentile,
-                        )
-                        mz_array = mz_array[intensity_array > percentile_intensity]
-                        intensity_array = intensity_array[
-                            intensity_array > percentile_intensity
+            with tqdm(disable=(not config.tqdm_enabled)) as pbar:
+                while True:
+                    try:
+                        scan = cls.parse_scan(next(obj), keep_level=2)
+                        mz_array = scan["m/zArray"]
+                        intensity_array = scan["IntensityArray"]
+                        mask = np.isfinite(mz_array) & np.isfinite(intensity_array)
+                        mz_array = mz_array[mask]
+                        intensity_array = intensity_array[mask]
+                        if config.ms2_preprocessing.filter_spectra:
+                            percentile_intensity = np.percentile(
+                                scan["IntensityArray"],
+                                config.ms2_preprocessing.filter_spectra_percentile,
+                            )
+                            mz_array = mz_array[intensity_array > percentile_intensity]
+                            intensity_array = intensity_array[
+                                intensity_array > percentile_intensity
+                            ]
+
+                        scan_key = str(scan["MS2TargetMass"])
+                        base_scan_data = [
+                            scan["MS2TargetMass"],
+                            scan["ScanNum"],
+                            scan["RetentionTime"],
                         ]
 
-                    scan_key = str(scan["MS2TargetMass"])
-                    base_scan_data = [
-                        scan["MS2TargetMass"],
-                        scan["ScanNum"],
-                        scan["RetentionTime"],
-                    ]
+                        if config.ms2_preprocessing.include_gpf_bounds:
+                            extra_data = [scan["lowerMass"], scan["higherMass"]]
+                            mz_arrays[scan_key].extend(
+                                [
+                                    base_scan_data + [mz, intensity] + extra_data
+                                    for mz, intensity in zip(mz_array, intensity_array)
+                                ]
+                            )
+                        else:
+                            mz_arrays[scan_key].extend(
+                                [
+                                    base_scan_data + [mz, intensity]
+                                    for mz, intensity in zip(mz_array, intensity_array)
+                                ]
+                            )
 
-                    if config.ms2_preprocessing.include_gpf_bounds:
-                        extra_data = [scan["lowerMass"], scan["higherMass"]]
-                        mz_arrays[scan_key].extend(
-                            [
-                                base_scan_data + [mz, intensity] + extra_data
-                                for mz, intensity in zip(mz_array, intensity_array)
-                            ]
-                        )
-                    else:
-                        mz_arrays[scan_key].extend(
-                            [
-                                base_scan_data + [mz, intensity]
-                                for mz, intensity in zip(mz_array, intensity_array)
-                            ]
-                        )
-
-                    pbar.update(1)
-                    if pbar.n % chunk_size == 0:
+                        pbar.update(1)
+                        if pbar.n % chunk_size == 0:
+                            write_chunks()
+                    except StopIteration:
                         write_chunks()
-                except StopIteration:
-                    write_chunks()
-                    break
-                except Exception as e:
-                    logger.exception(e)
+                        break
+                    except Exception as e:
+                        logger.exception(e)
 
     @classmethod
     def to_ms2_long(
