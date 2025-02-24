@@ -4,6 +4,19 @@ from typing import *
 
 import configparser
 
+def format_logger(logger: logging.Logger, level: int = logging.INFO) -> None:
+    """Configure basic formatting for a logger.
+    
+    Args:
+        logger: Logger instance to configure
+    """
+    formatter = logging.Formatter(
+        fmt="[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s"
+    )
+    for handler in logger.handlers:
+        handler.setFormatter(formatter)
+    
+    logger.setLevel(level)
 
 class AttributeDict(dict):
     """Dictionary with attribute-style access"""

@@ -7,6 +7,10 @@ import base64
 import pickle
 import tempfile
 import logging
+from logging.handlers import QueueHandler, QueueListener
+from multiprocessing import Queue, Manager
+from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import optuna
@@ -21,7 +25,7 @@ from fragment_feature_detection.utils import (
     calculate_hoyer_sparsity,
     calculate_nmf_summary,
 )
-from fragment_feature_detection.config import Config
+from fragment_feature_detection.config import Config, format_logger
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +68,11 @@ class OptimizationParameters:
         self.set_params()
 
     def set_params(self) -> None:
-        """ """
+        """Sets target scores for different optimization metrics.
+        
+        Updates the internal _scores dictionary with target values for various 
+        optimization metrics based on the current parameter settings.
+        """
         self._scores = {
             "weight_orthogonality": 0.0,
             "sample_orthogonality": 0.0,
@@ -81,7 +89,15 @@ class OptimizationParameters:
     def score(
         self, param: str, value: Union[float, np.ndarray]
     ) -> Union[float, np.ndarray]:
-        """ """
+        """Calculates optimization score for a parameter value.
+        
+        Args:
+            param (str): Name of parameter to score
+            value (Union[float, np.ndarray]): Parameter value(s) to score
+            
+        Returns:
+            Union[float, np.ndarray]: Calculated score based on error metric
+        """
         if param in self._scores.keys():
             if self._error == "l1":
                 return -1.0 * np.abs(value + self._scores[param])
@@ -91,7 +107,14 @@ class OptimizationParameters:
 
     @classmethod
     def from_config(cls, config: Config = Config()) -> "OptimizationParameters":
-        """ """
+        """Creates OptimizationParameters instance from config object.
+        
+        Args:
+            config (Config): Configuration object containing optimization parameters
+            
+        Returns:
+            OptimizationParameters: New instance initialized with config values
+        """
         obj = cls()
         
         obj._components_in_window = config.tuning.components_in_window
@@ -99,7 +122,9 @@ class OptimizationParameters:
         obj._scan_width = config.scan_filter.scan_width
         # component_sigma is scale paramter of normal distribution of component in units of scans, not in RT
         obj._component_sigma = config.tuning.component_sigma 
-        
+
+        obj.set_params()
+
         return obj
 
 
@@ -170,7 +195,15 @@ class MzBinMaskingSplitter:
 
     @staticmethod
     def mask_train_matrix(m: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """ """
+        """Masks values in training matrix.
+        
+        Args:
+            m (np.ndarray): Input matrix to mask
+            mask (np.ndarray): Boolean mask array
+            
+        Returns:
+            np.ndarray: Masked matrix with zeros in masked positions
+        """
         m[mask] = 0.0
         return m
 
@@ -181,7 +214,17 @@ class MzBinMaskingSplitter:
         mask: np.ndarray,
         *args: Any,
     ) -> float:
-        """ """
+        """Calculates reconstruction error on masked values.
+        
+        Args:
+            m (np.ndarray): Original matrix
+            m_reconstructed (np.ndarray): Reconstructed matrix
+            mask (np.ndarray): Boolean mask array
+            *args: Additional arguments (unused)
+            
+        Returns:
+            float: Mean squared error between original and reconstructed masked values
+        """
         return np.nanmean((m[mask] - m_reconstructed[mask]) ** 2)
 
 
@@ -302,7 +345,14 @@ class NMFMaskWrapper(BaseEstimator):
         self._nmf_kwargs = nmf_kwargs
 
     def fit_model(self, m: np.ndarray):
-        """ """
+        """Fits NMF model to input matrix.
+        
+        Args:
+            m (np.ndarray): Input matrix to fit
+            
+        Returns:
+            Tuple[np.ndarray, np.ndarray, NMF]: Weight matrix, component matrix, and fitted model
+        """
         W, H, model = fit_nmf_matrix_custom_init(
             m,
             return_model=True,
@@ -311,7 +361,18 @@ class NMFMaskWrapper(BaseEstimator):
         return W, H, model
 
     def fit(self, X, y=None):
-        """ """
+        """Fits the NMF model with masked cross-validation.
+        
+        Performs multiple fits with different random masks to evaluate reconstruction
+        performance and calculate various metrics.
+        
+        Args:
+            X: Input data matrices
+            y: Ignored, present for sklearn compatibility
+            
+        Returns:
+            self: Returns self for method chaining
+        """
         self._models = []
         self._reconstruction_errors = []
         self._test_reconstruction_errors = []
@@ -395,15 +456,42 @@ class NMFMaskWrapper(BaseEstimator):
         return self
 
     def score(self, X, y=None):
-        """ """
+        """Calculates overall score as negative mean reconstruction error.
+        
+        Args:
+            X: Input data (unused)
+            y: Ignored, present for sklearn compatibility
+            
+        Returns:
+            float: Negative mean reconstruction error score
+        """
         return -1 * np.nanmean(self._reconstruction_errors)
 
     def get_params(self, deep: bool = True):
-        """Override get_params to allow access to nmf hyperparameters of interest."""
+        """Gets parameters for this estimator.
+        
+        Override get_params to allow access to nmf hyperparameters of interest.
+        
+        Args:
+            deep (bool): If True, will return the parameters for this estimator and
+                contained subobjects that are estimators
+                
+        Returns:
+            dict: Parameter names mapped to their values
+        """
         return {**super().get_params(deep=deep), **self._nmf_kwargs}
 
     def set_params(self, **params: Dict[str, Any]):
-        """Override set_params to update the parameters in _nmf_kwargs"""
+        """Sets the parameters of this estimator.
+        
+        Override set_params to update the parameters in _nmf_kwargs.
+        
+        Args:
+            **params: Estimator parameters
+            
+        Returns:
+            self: Estimator instance
+        """
         for param, value in params.items():
             if param in self._nmf_kwargs.keys():
                 self._nmf_kwargs[param] = value
@@ -504,6 +592,29 @@ class RandomizedSearchReconstructionCV(BaseSearchCV):
             all_out = []
             all_more_results = defaultdict(list)
 
+            def objective(    
+                estimator: BaseEstimator,
+                X: Union[List[Any], np.ndarray],
+                log_queue: Queue,
+                iter_n: int, 
+                extra_scores: Optional[List[str]] = None,
+                parameters: Dict[str, Any] = {},
+                **kwargs: Dict[str, Any],
+            ) -> List[Dict]:
+                """ """
+                iter_logger = logging.getLogger(f"iter_{iter_n}")
+                iter_logger.addHandler(QueueHandler(log_queue))
+                format_logger(iter_logger, level=logging.INFO)
+                iter_logger.info(f'Iter {iter_n} starting with params: {parameters}')
+
+                return _fit_and_score(
+                    estimator,
+                    X,
+                    parameters=parameters,
+                    extra_scores=extra_scores,
+                    **kwargs,
+                )
+
             def evaluate_candidates(
                 candidate_params: ParameterSampler,
                 more_results: Optional[Dict[str, Any]] = None,
@@ -512,15 +623,28 @@ class RandomizedSearchReconstructionCV(BaseSearchCV):
                 candidate_params = list(candidate_params)
                 n_candidates = len(candidate_params)
 
-                out = parallel(
-                    delayed(_fit_and_score)(
-                        clone(base_estimator),
-                        X,
-                        parameters=parameters,
-                        extra_scores=_FIT_AND_SCORE,
+                with Manager() as manager:
+                    # Create a queue for logging
+                    log_queue = manager.Queue()
+                    # Get the root logger and create a queue listener
+                    logger = logging.getLogger()
+                    listener = QueueListener(log_queue, *logger.handlers)
+                    listener.start()
+
+                    out = parallel(
+                        delayed(objective)(
+                            clone(base_estimator),
+                            X,
+                            log_queue,
+                            i,
+                            parameters=parameters,
+                            extra_scores=_FIT_AND_SCORE,
+                        )
+                        for i, parameters in enumerate(candidate_params)
                     )
-                    for parameters in candidate_params
-                )
+
+                    listener.stop()
+
                 out = [i for j in out for i in j]
 
                 if len(out) < 1:
@@ -675,12 +799,23 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
         ) -> Dict[str, Any]:
             """ """
 
-            def objective(trial: optuna.Trial):
-                """ """
+            def objective(trial: optuna.Trial) -> Union[np.ndarray, Tuple[np.ndarray]]:
+                """Objective function for Optuna optimization.
+                
+                Evaluates a trial's parameter set by fitting models and calculating scores.
+                
+                Args:
+                    trial (optuna.Trial): Current optimization trial
+                    
+                Returns:
+                    Union[float, Tuple[float, ...]]: Score(s) for the trial
+                    
+                Raises:
+                    optuna.TrialPruned: If trial should be pruned
+                """
                 results = None
+                params = {}
                 try:
-
-                    params = {}
                     for k, v in candidate_params.items():
                         # Suggest categorical variable.
                         if isinstance(v[0], str):
@@ -725,7 +860,7 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                             output_parameters.append(parameter_value)
                         return tuple(output_parameters)
                     except:
-                        logger.info("Only one objective defined.")
+                        print("Only one objective defined.")
 
                     return np.nanmean([r["test_scores"] for r in results])
 
@@ -733,7 +868,6 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                     if results is not None:
                         print([r["fit_error"] for r in results])
                     print(e)
-                    logger.exception(e)
                     trial.set_user_attr("error", str(e))
                     trial.set_user_attr(
                         "out",
@@ -742,23 +876,72 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                         ).decode("utf-8"),
                     )
                     raise optuna.TrialPruned()
-
+                
             def optimize_optuna_study(
-                study_name: str, storage_string: str, objective: Callable, n_trials: int
+                study_name: str, 
+                storage_string: str, 
+                objective: Callable, 
+                n_trials: int,
+                worker_n: int, 
+                log_queue: Queue,
             ) -> None:
-                """ """
+                """Runs Optuna optimization study.
+                
+                Args:
+                    study_name (str): Name for the study
+                    storage_string (str): Storage location for study results
+                    objective (Callable): Objective function to optimize
+                    n_trials (int): Number of trials to run
+                """
+                working_logger = logging.getLogger(f"worker_{worker_n}")
+                working_logger.addHandler(QueueHandler(log_queue))
+                format_logger(working_logger, level=logging.INFO)
+                working_logger.info(f'Worker {worker_n} starting...')
+
+                class OptunaLoggingCallback:
+                    """Callback for logging Optuna optimization progress.
+        
+                    Logs trial results, parameters, and optimization progress.
+                    """
+                    def __init__(self, logger: logging.Logger, worker: int ) -> None:
+                        """
+                        Args:
+                            logger (logging.Logger): Instance of worker logger.
+                            worker (int): Worker number.
+                        """
+                        self.logger = logger
+                        self.worker = worker
+                    def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+                        """ """
+                        if "error" in trial.user_attrs:
+                            error_msg = trial.user_attrs.get("error", "Unknown error")
+                            self.logger.error(
+                                f"Failed trial: {trial.number} with params: {trial.params} on {self.worker}, {error_msg}."
+                            )
+                        else:
+                            self.logger.info(
+                                f"Completed trial: {trial.number} with params: {trial.params} on {self.worker}."
+                            )
+
                 study = optuna.create_study(
                     study_name=study_name, storage=storage_string, load_if_exists=True
                 )
-                study.optimize(objective, n_trials=n_trials)
+                callback = OptunaLoggingCallback(working_logger, worker_n)
+                study.optimize(objective, n_trials=n_trials, callbacks=[callback])
 
-            with tempfile.NamedTemporaryFile(dir="/tmp/", suffix=".db") as temp_db:
+            with tempfile.NamedTemporaryFile(dir="/tmp/", suffix=".db") as temp_db, Manager() as manager:
+                # Get root logger, create queue, start a queuelistiner, and pass queue to parallel func. 
+                logger = logging.getLogger()
+                log_queue = manager.Queue()
+                listener = QueueListener(log_queue, *logger.handlers)
+                listener.start()
+
                 storage_string = f"sqlite:///{temp_db.name}"
                 study = optuna.create_study(
                     storage=storage_string,
                     directions=["maximize" for _ in self.objective_params],
                 )
-
+                
                 with Parallel(
                     n_jobs=self.n_jobs, pre_dispatch=self.pre_dispatch
                 ) as parallel:
@@ -768,9 +951,14 @@ class OptunaSearchReconstructionCV(BaseSearchCV):
                             storage_string,
                             objective,
                             (self.n_iter // self.n_jobs) + 1,
+                            i,
+                            log_queue,
                         )
-                        for _ in range(self.n_jobs)
+                        for i in range(self.n_jobs)
                     )
+
+                listener.stop()
+
             all_out = [
                 r
                 for t in study.trials
@@ -955,8 +1143,9 @@ def fit_nmf_matrix_custom_init(
         if isinstance(W_init, np.ndarray) and isinstance(H_init, np.ndarray)
         else (init if init else ("nndsvd" if solver == "cd" else "nndsvda"))
     )
+    n_components=min(n_components, max(min(m.shape), 1))
     model = NMF(
-        n_components=min(n_components, min(m.shape)),
+        n_components=n_components,
         alpha_W=alpha_W,
         alpha_H=alpha_H,
         l1_ratio=l1_ratio,
@@ -966,17 +1155,34 @@ def fit_nmf_matrix_custom_init(
         random_state=random_state,
         **nmf_kwargs,
     )
-    if isinstance(W_init, np.ndarray) and isinstance(H_init, np.ndarray):
-        W = model.fit_transform(m, W=W_init, H=H_init)
-    else:
-        W = model.fit_transform(m)
+    try:
+        if min(m.shape) == 0:
+            # Output empty basis and weight matrix. 
+            W = np.zeros((m.shape[0], n_components))
+            model.components_ = np.zeros((n_components, m.shape[1]))
+            model.reconstruction_err_ = 1e6
+        else:
+            if isinstance(W_init, np.ndarray) and isinstance(H_init, np.ndarray):
+                W = model.fit_transform(m, W=W_init, H=H_init)
+            else:
+                W = model.fit_transform(m)
+    except Exception as e:
+        # This exception getting raised in scipy linalg somewhere during nmf initialization.
+        # str(e) == "array must not contain infs or NaNs"
+
+        # Output empty basis and weight matrix. 
+        W = np.zeros((m.shape[0], n_components))
+        model.components_ = np.zeros((n_components, m.shape[1]))
+        model.reconstruction_err_ = 1e6
+
+        logger.exception(e)
 
     if return_model:
         return W, model.components_, model
     return W, model.components_
 
 
-def pick_parameters_optuna_harmonic_mean(
+def pick_parameters_harmonic_mean(
     bcv: BaseSearchCV,
     parameter_names: List[str],
     constant: float = 0.001,
@@ -1025,21 +1231,162 @@ def pick_parameters_optuna_harmonic_mean(
 
 def tune_hyperparameters_randomizedsearchcv(
     ms: List[np.ndarray],
-    n_splits: int = 5,
-    test_size: float = 0.2,
-    random_state: int = 42,
-    nmf_param_grid: Dict[str, Any] = {},
+    config: Config = Config(),
+    save_run: bool = True,
 ) -> None:
-    """ """
-    pass
+    """Tune hyperparameters using RandomizedSearchCV.
+    
+    Args:
+        ms (List[np.ndarray]): List of matrices to tune on
+        config (Config): Configuration object containing tuning parameters
+        save_run (bool): Whether to save the tuning results
+        
+    Returns:
+        Dict[str, Any]: Best parameters found by harmonic mean scoring
+    """
+    # Get root logger setup
+    logger = logging.getLogger()
+    original_logger_state = logger.disabled 
+    original_logger_level = logger.level
+
+    log_suffix = f"tuning_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    base_file_name = Path('randomized_tuning.log')
+
+    # Create new file handler
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            base_file_name = Path(handler.baseFilename)
+            base_file_name = base_file_name.with_suffix(f".{log_suffix}.log")
+            new_handler = logging.FileHandler(
+                base_file_name,
+                mode='w',
+            )
+            new_handler.setFormatter(handler.formatter)
+            new_handler.setLevel(handler.level)
+            logger.addHandler(new_handler)
+            handler.disabled = True
+            break
+            
+    # Add a filehandler if one didn't already exist on root logger
+    if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+        new_handler = logging.FileHandler(base_file_name.with_suffix(f".{log_suffix}.log"), mode='w',)
+        logger.addHandler(new_handler)
+    
+    # Format all handlers on logger.
+    format_logger(logger)
+
+    # Create parameters to optimize from config
+    op = OptimizationParameters.from_config(config)
+    
+    rcv = RandomizedSearchReconstructionCV(
+        NMFMaskWrapper(
+            splitter_type=config.tuning.splitter_type,
+            mask_fraction=config.tuning.test_fraction,
+            n_components=config.tuning.n_components,
+            n_splits=config.tuning.n_splits,
+            l1_ratio=config.nmf.l1_ratio,
+            alpha_W=config.nmf.alpha_W,
+            alpha_H=config.nmf.alpha_H,
+        ),
+        config.tuning.hyperparameter_grid,
+        n_iter=config.tuning.n_iter,
+        random_state=config.random_seed,
+        return_train_score=True,
+        n_jobs=config.tuning.n_jobs,
+    )
+
+    logger.info("Starting hyperparameter optimization")
+    logger.info(f"Number of iterations: {config.tuning.n_iter}")
+    logger.info(f"Parameter space: {config.tuning.hyperparameter_grid}")
+    
+    rcv.fit([m.copy() for m in ms])
+    
+    logger.info("Optimization complete")
+    logger.info(f"Best parameters: {rcv.best_params_}")
+    logger.info(f"Best score: {rcv.best_score_}")
+
+    # Calculate harmonic mean scores
+    harmonic_scores = pick_parameters_harmonic_mean(
+        rcv,
+        config.tuning.objective_params,
+        optimization_parameters=op
+    )
+    best_harmonic_idx = np.argmax(harmonic_scores)
+    logger.info(f"Best parameters by harmonic mean: {rcv.cv_results['params'][best_harmonic_idx]}")
+    logger.info(f"Best harmonic mean score: {harmonic_scores[best_harmonic_idx]}")
+
+    if save_run:
+        pickle_fh = base_file_name.with_suffix(f".{log_suffix}.pkl")
+        with open(pickle_fh, 'wb') as f:
+            pickle.dump(rcv, f)
+
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            if handler is new_handler:
+                logger.removeHandler(handler)
+                handler.close()
+        elif isinstance(handler, logging.FileHandler):
+            handler.disabled=False
+
+    logger.disabled = original_logger_state
+    logger.setLevel(original_logger_level)
+
+    return rcv.cv_results['params'][best_harmonic_idx]
 
 def tune_hyperparameters_optunasearchcv(
     ms: List[np.ndarray],
     config: Config = Config(),
-) -> None:
-    """ """
+    save_run: bool = True, 
+) -> Dict[str, Any]:
+    """Tune hyperparameters using OptunaSearchCV.
+    
+    Performs hyperparameter optimization using Optuna with multiple objectives.
+    Logs results and optionally saves the optimization run.
+    
+    Args:
+        ms (List[np.ndarray]): List of matrices to tune on
+        config (Config): Configuration object containing tuning parameters
+        save_run (bool): Whether to save the tuning results
+        
+    Returns:
+        Dict[str, Any]: Best parameters found by harmonic mean scoring
+    """
+    # Get root logger setup.
+    logger = logging.getLogger()
+    original_logger_state = logger.disabled 
+    original_logger_level = logger.level
 
-    op = OptimizationParameters.from_config(my_config)
+    log_suffix = f"tuning_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    base_file_name = Path('optuna_tuning.log') 
+
+    # Create new file handler.
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            base_file_name = Path(handler.baseFilename)
+            base_file_name = base_file_name.with_suffix(f".{log_suffix}.log")
+            new_handler = logging.FileHandler(
+                base_file_name,
+                mode='w',
+            )
+            new_handler.setFormatter(handler.formatter)
+            new_handler.setLevel(handler.level)
+            logger.addHandler(new_handler)
+            handler.disabled = True
+            break
+            
+    # Add a filehandler if one didn't already exist on root logger.
+    if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+        new_handler = logging.FileHandler(base_file_name.with_suffix(f".{log_suffix}.log"), mode='w',)
+        logger.addHandler(new_handler)
+
+    # Format all handlers on logger.
+    format_logger(logger)
+
+    optuna.logging.disable_default_handler()  
+    optuna.logging.enable_propagation()
+    
+    # Create parameters to optimize fromm config.
+    op = OptimizationParameters.from_config(config)
     
     ocv = OptunaSearchReconstructionCV(
         NMFMaskWrapper(
@@ -1047,11 +1394,11 @@ def tune_hyperparameters_optunasearchcv(
             mask_fraction=config.tuning.test_fraction,
             n_components=config.tuning.n_components,
             n_splits=config.tuning.n_splits,
-            l1_ratio=0.5,
-            alpha_W=0.01,
-            alpha_H=0.01,
+            l1_ratio=config.nmf.l1_ratio,
+            alpha_W=config.nmf.alpha_W,
+            alpha_H=config.nmf.alpha_H,
         ),
-        my_config.tuning.optuna_hyperparameter_grid,
+        config.tuning.optuna_hyperparameter_grid,
         objective_params=config.tuning.objective_params,
         n_iter=config.tuning.n_iter,
         random_state=config.random_seed,
@@ -1061,9 +1408,48 @@ def tune_hyperparameters_optunasearchcv(
         optimization_parameters=op,
     )
 
-    logger.disabled = True    
-
+    logger.info("Starting hyperparameter optimization")
+    logger.info(f"Number of iterations: {config.tuning.n_iter}")
+    logger.info(f"Parameter space: {config.tuning.optuna_hyperparameter_grid}")
     
+    ocv.fit([m.copy() for m in ms])
+    
+    logger.info("Optimization complete")
+    
+    for trial in ocv.best_trials_:
+        logger.info(f"Trial parameters: {trial['params']}")
+        logger.info(f"Trial scores: {trial['scores']}")
+
+    # Calculate harmonic mean scores
+    harmonic_scores = pick_parameters_harmonic_mean(
+        ocv,
+        config.tuning.objective_params,
+        optimization_parameters=op
+    )
+    best_harmonic_idx = np.argmax(harmonic_scores)
+    logger.info(f"Best parameters by harmonic mean: {ocv.cv_results['params'][best_harmonic_idx]}")
+    logger.info(f"Best harmonic mean score: {harmonic_scores[best_harmonic_idx]}")
+
+    if save_run:
+        pickle_fh = base_file_name.with_suffix(f".{log_suffix}.pkl")
+        with open(pickle_fh, 'wb') as f:
+            pickle.dump(ocv, f)
+
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            if handler is new_handler:
+                logger.removeHandler(handler)
+                handler.close()
+        elif isinstance(handler, logging.FileHandler):
+            handler.disabled=False
+    
+    # Disable propagation on the optuna logger.
+    optuna.logging.disable_propagation()
+
+    logger.disabled = original_logger_state
+    logger.setLevel(original_logger_level)
+
+    return ocv.cv_results['params'][best_harmonic_idx]
 
     
     
