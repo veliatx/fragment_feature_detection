@@ -122,10 +122,21 @@ class MSRun:
 
         windows = []
 
+        if "window_sampling_n" in config.tuning:
+            # Pick a random gpf to check len and calculate a window sampling fraction that roughly gets you 
+            # to the required number of windows. 
+            sample_gpf_index = list(self._gpf_runs)[int(len(self._gpf_runs) / 2)]
+            gpf = self.get_gpf(sample_gpf_index)
+            window_sampling_fraction = config.tuning.window_sampling_n / len(self._gpf_runs) / (
+                len(gpf.scan_windows) - config.tuning.exclude_scan_window_edges * 2
+            )
+        else:
+            window_sampling_fraction = config.tuning.window_sampling_fraction
+
         for gpf_index in tqdm(self._gpf_runs, disable=(not config.tqdm_enabled)):
             gpf = self.get_gpf(gpf_index)
             scan_windows = gpf.sample_scan_windows(
-                window_sampling_fraction=config.tuning.window_sampling_fraction,
+                window_sampling_fraction=window_sampling_fraction,
                 exclude_scan_window_edges=config.tuning.exclude_scan_window_edges,
                 rng=rng,
             )
