@@ -1,26 +1,15 @@
-from typing import (
-    Union,
-    Optional,
-    Tuple,
-    Type,
-    Literal,
-    List,
-    Dict,
-    Any,
-)
-from pathlib import Path
 import logging
-import copy
-import warnings
+from pathlib import Path
+from typing import List, Optional, Type, Union
 
-import numpy as np
 import h5py
+import numpy as np
 from tqdm import tqdm
 
+from ..config import Config
+from ..discretization import MzDiscretize
 from .gpfrun import GPFRun
 from .scanwindow import ScanWindow
-from ..discretization import MzDiscretize
-from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -123,12 +112,14 @@ class MSRun:
         windows = []
 
         if "window_sampling_n" in config.tuning:
-            # Pick a random gpf to check len and calculate a window sampling fraction that roughly gets you 
-            # to the required number of windows. 
+            # Pick a random gpf to check len and calculate a window sampling fraction that roughly gets you
+            # to the required number of windows.
             sample_gpf_index = list(self._gpf_runs)[int(len(self._gpf_runs) / 2)]
             gpf = self.get_gpf(sample_gpf_index)
-            window_sampling_fraction = config.tuning.window_sampling_n / len(self._gpf_runs) / (
-                len(gpf.scan_windows) - config.tuning.exclude_scan_window_edges * 2
+            window_sampling_fraction = (
+                config.tuning.window_sampling_n
+                / len(self._gpf_runs)
+                / (len(gpf.scan_windows) - config.tuning.exclude_scan_window_edges * 2)
             )
         else:
             window_sampling_fraction = config.tuning.window_sampling_fraction
@@ -205,37 +196,51 @@ class MSRun:
         config: Config = Config(),
     ) -> "MSRun":
         """ """
-
         if discretize is None:
             discretize = MzDiscretize.from_config(config)
 
+        # If msrun_h5_fh is not provided, use the same file as input
+        if msrun_h5_fh is None:
+            msrun_h5_fh = h5_fh
+
         msrun = cls(
             lazy=config.lazy,
-            h5_fh=msrun_h5_fh if msrun_h5_fh else Path(h5_fh).with_suffix(".msrun.h5"),
+            h5_fh=msrun_h5_fh,
         )
 
-        with h5py.File(h5_fh, "r") as f:
-            unique_gpfs = [k for k in f.keys() if "ms2_long" in f[k].keys()]
-            if gpf_masses is not None:
-                unique_gpfs = [k for k in unique_gpfs if k in gpf_masses]
+        # If using the same file, reuse the handle
+        if h5_fh == msrun_h5_fh and msrun._h5_file is not None:
+            f = msrun._h5_file
+            close_file = False
+        else:
+            f = h5py.File(h5_fh, "r")
+            close_file = True
 
-            unique_gpfs = sorted(unique_gpfs, key=lambda x: float(x))
+        unique_gpfs = [k for k in f.keys() if "ms2_long" in f[k].keys()]
+        if gpf_masses is not None:
+            unique_gpfs = [k for k in unique_gpfs if k in gpf_masses]
 
-            for i, gpf_mass in tqdm(
-                enumerate(unique_gpfs),
-                disable=(not config.tqdm_enabled),
-                total=len(unique_gpfs),
-            ):
-                sub_m = f[gpf_mass]["ms2_long"][:]
+        unique_gpfs = sorted(unique_gpfs, key=lambda x: float(x))
 
-                gpf = GPFRun.from_undiscretized_long(
-                    float(gpf_mass),
-                    sub_m,
-                    discretize,
-                    config=config,
-                    index=i,
-                )
-                msrun.add_gpf(i, gpf)
+        for i, gpf_mass in tqdm(
+            enumerate(unique_gpfs),
+            disable=(not config.tqdm_enabled),
+            total=len(unique_gpfs),
+        ):
+            logger.info(f"Building GPFRun: {i}/{len(unique_gpfs)}...")
+            sub_m = f[gpf_mass]["ms2_long"][:]
+
+            gpf = GPFRun.from_undiscretized_long(
+                float(gpf_mass),
+                sub_m,
+                discretize,
+                config=config,
+                index=i,
+            )
+            msrun.add_gpf(i, gpf)
+
+        if close_file:
+            f.close()
 
         return msrun
 
@@ -350,7 +355,7 @@ class MSRun:
 
     @classmethod
     def from_h5(
-        cls, h5_fh: Union[str, h5py.File, h5py.Group], config: Config = Config()
+        cls, h5_fh: Union[str, Path, h5py.File, h5py.Group], config: Config = Config()
     ) -> "MSRun":
         """Load an MSRun object from an HDF5 file.
 
@@ -360,7 +365,7 @@ class MSRun:
         Returns:
             MSRun: Loaded object
         """
-        if isinstance(h5_fh, str):
+        if isinstance(h5_fh, (str, Path)):
             # Handle case when you want to lazy-load from_h5, use handle from object itself.
             if config.lazy:
                 f = None
