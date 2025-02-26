@@ -1,10 +1,12 @@
-from typing import Optional, Tuple, Dict, List
+from datetime import datetime
+from importlib.metadata import version
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from tqdm import tqdm
 import pandas as pd
-
 import scipy.sparse as sps
+from tqdm import tqdm
 
 from fragment_feature_detection.config import Config, Constants
 
@@ -18,7 +20,7 @@ def ms2_df_to_long(
     Args:
         df (pd.DataFrame): DataFrame containing MS2 data with columns for MS2TargetMass,
             RetentionTime, ScanNum, m/zArray, and IntensityArray
-        config (Config, optional): Configuration object. Defaults to Config()
+        config (Config): Configuration object. Defaults to Config()
 
     Returns:
         np.ndarray: Array with columns [mass, scan_number, retention_time, mz, intensity]
@@ -107,9 +109,9 @@ def pivot_unique_binned_mz_sparse(
 
     Args:
         m (np.ndarray): Output array from overlapping_discretize_bins
-        mz_bin_index (int, optional): Column index for mz bin values. Defaults to 5
-        scan_index (int, optional): Column index for scan numbers. Defaults to 1
-        intensity_index (int, optional): Column index for intensity values. Defaults to 4
+        mz_bin_index (int): Column index for mz bin values. Defaults to 5
+        scan_index (int): Column index for scan numbers. Defaults to 1
+        intensity_index (int): Column index for intensity values. Defaults to 4
 
     Returns:
         Tuple containing:
@@ -131,7 +133,7 @@ def pivot_unique_binned_mz_sparse(
 
 def calculate_hoyer_sparsity(m: np.ndarray) -> float:
     """Calculates the Hoyer sparsity measure of an array.
-    
+
     The Hoyer sparsity measure is based on the relationship between L1 and L2 norms.
     Returns a value between 0 (dense) and 1 (sparse).
 
@@ -152,7 +154,7 @@ def calculate_hoyer_sparsity(m: np.ndarray) -> float:
 
 def calculate_simple_sparsity(m: np.ndarray) -> float:
     """Calculates the simple sparsity measure of an array.
-    
+
     Simple sparsity is defined as the fraction of non-zero elements.
     Returns a value between 0 (dense) and 1 (sparse).
 
@@ -255,23 +257,23 @@ def fraction_explained_variance(
 def calculate_theoretical_precursor_monoisotopic_masses(
     fragments: np.ndarray,
     charge_states: List[int] = np.arange(1, 4),
-    isotope_mu: float = Constants.isotope_mu,
+    proton_mu: float = Constants.proton_mu,
 ) -> np.ndarray:
     """Calculates theoretical precursor monoisotopic masses from fragment masses.
 
     Args:
         fragments (np.ndarray): Array of fragment masses
-        charge_states (List[int], optional): List of charge states to consider. 
+        charge_states (List[int]): List of charge states to consider.
             Defaults to [1, 2, 3]
-        isotope_mu (float, optional): Mass difference between isotopes. 
-            Defaults to Constants.isotope_mu
+        proton_mu (float): Mass of proton.
+            Defaults to Constants.proton_mu
 
     Returns:
         np.ndarray: Array of theoretical precursor monoisotopic masses
     """
     monoisotopic_masses = []
     for c in charge_states:
-        monoisotopic_masses.append((fragments * c) - (c - 1) * isotope_mu)
+        monoisotopic_masses.append((fragments * c) - (c - 1) * proton_mu)
     monoisotopic_masses = np.concatenate(monoisotopic_masses)
 
     theoretical_precursor_masses = (
@@ -284,21 +286,112 @@ def calculate_theoretical_precursor_monoisotopic_masses(
 def calculate_mz_from_masses(
     monoisotopic_masses: np.ndarray,
     charge_states: List[int] = list(np.arange(1, 9)),
-    isotope_mu: float = Constants.isotope_mu,
+    proton_mu: float = Constants.proton_mu,
 ) -> np.ndarray:
     """Calculates m/z values from monoisotopic masses for different charge states.
 
     Args:
         monoisotopic_masses (np.ndarray): Array of monoisotopic masses
-        charge_states (List[int], optional): List of charge states to consider. 
+        charge_states (List[int]): List of charge states to consider.
             Defaults to [1, 2, ..., 8]
-        isotope_mu (float, optional): Mass difference between isotopes. 
-            Defaults to Constants.isotope_mu
+        proton_mu (float): Mass of proton.
+            Defaults to Constants.proton_mu
 
     Returns:
         np.ndarray: Array of m/z values for all combinations of masses and charge states
     """
     mz = []
     for c in charge_states:
-        mz.append((monoisotopic_masses + ((c - 1) * isotope_mu)) / c)
+        mz.append((monoisotopic_masses + ((c - 1) * proton_mu)) / c)
     return np.concatenate(mz)
+
+
+def feature_df_to_ms2(
+    feature_df: pd.DataFrame,
+    ms2_path: Union[str, Path],
+    extractor_options: Dict[str, Any],
+    extractor_version: str = version("fragment_feature_detection"),
+    comments: Optional[str] = None,
+    proton_mu: float = Constants.proton_mu,
+) -> None:
+    """Converts a feature DataFrame to MS2 file format.
+
+    Args:
+        feature_df (pd.DataFrame): DataFrame containing MS2 feature data
+        ms2_path (Union[str, Path]): Path to output MS2 file
+        extractor_options (Dict[str, Any]): Options used for feature extraction. Must include:
+            output_type (str): Type of output data to use:
+                - "raw": Uses raw MS2 data (ms2_mz_array and ms2_intensity_array)
+                - "intensity_transform_weight": Uses reweighted component data
+                  (ms2_component_reweight_mz and ms2_component_reweight_intensity)
+                - "raw_weight": Uses component weights data
+                  (ms2_component_weight_mz and ms2_component_weight_intensity)
+            wide_window (bool): If True, uses GPF-based precursor information.
+                              If False, uses MS1-based precursor information.
+        extractor_version (str): Version of the extractor. Defaults to current package version
+        comments (Optional[str]): Comments to include in MS2 header. Defaults to None
+        proton_mu (float): Proton mass. Defaults to Constants.proton_mu
+    """
+    header = (
+        """H\tCreationDate\t{creation_date}\nH\tExtractor\tffd\nH\tExtractorVersion\t{extractor_version}"""
+        """\nH\tComments\t{comments}\nH\tExtractorOptions\t{extractor_options}\n\n"""
+    ).format(
+        creation_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        extractor_version=extractor_version,
+        comments=comments if comments else "Nothing to note.",
+        extractor_options=",".join([f"{k}->{v}" for k, v in extractor_options.items()]),
+    )
+
+    # Configure which columns will be used for writing ms2.
+    if extractor_options["output_type"] == "raw":
+        mz_column_name = "ms2_mz_array"
+        intensity_column_name = "ms2_intensity_array"
+    elif extractor_options["output_type"] == "intensity_transform_weight":
+        mz_column_name = "ms2_component_reweight_mz"
+        intensity_column_name = "ms2_component_reweight_intensity"
+    elif extractor_options["output_type"] == "raw_weight":
+        mz_column_name = "ms2_component_weight_mz"
+        intensity_column_name = "ms2_component_weight_intensity"
+
+    if not extractor_options["wide_window"]:
+        precursor_charge_column_name = "ms1_charge"
+        precursor_mz_column_name = "ms1_mz"
+        precursor_mass_column_name = "ms1_mass"
+        df = feature_df.loc[~feature_df["ms1_matching_coef"].isna()].copy()
+        # Biosaur2 reports precursor mass, convert to MH+ for ms2 file.
+        df[precursor_mass_column_name] += proton_mu
+    else:
+        precursor_charge_column_name = "ms2_gpf_charge"
+        precursor_mz_column_name = "ms2_gpf_center"
+        precursor_mass_column_name = "ms2_gpf_mass"
+        df = feature_df.drop_duplicates("ms2_component").copy()
+        # Default to charge state 2
+        df[precursor_charge_column_name] = 2
+        df[precursor_mass_column_name] = (
+            df[precursor_mz_column_name] * df[precursor_charge_column_name]
+            - df[precursor_charge_column_name] * proton_mu
+            + proton_mu
+        )
+    df["ms2_file_scan_number"] = np.arange(1, df.shape[0] + 1)
+
+    ms2_scan = (
+        """S\t{scan_number}\t{scan_number}\t{precursor_mz:.5f}\n"""
+        """Z\t{precursor_charge}\t{precursor_mhplus:.5f}\n{scan_data}\n"""
+    )
+
+    with open(ms2_path, "w") as f_out:
+        f_out.write(header)
+        for i, r in df.iterrows():
+            scan_data = "\n".join(
+                f"{mz:.5f} {intensity:.3f}"
+                for mz, intensity in zip(r[mz_column_name], r[intensity_column_name])
+            )
+            f_out.write(
+                ms2_scan.format(
+                    scan_number=int(r["ms2_file_scan_number"]),
+                    precursor_mz=r[precursor_mz_column_name],
+                    precursor_charge=int(r[precursor_charge_column_name]),
+                    precursor_mhplus=r[precursor_mass_column_name],
+                    scan_data=scan_data,
+                )
+            )

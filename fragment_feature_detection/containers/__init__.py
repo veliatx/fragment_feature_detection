@@ -1,36 +1,23 @@
-from typing import (
-    Union,
-    Optional,
-    Tuple,
-    Type,
-    Literal,
-    List,
-    Dict,
-    Any,
-)
-from pathlib import Path
 import logging
-import copy
-import warnings
 import time
+import warnings
+from typing import Any, Dict, Optional
 
 import numpy as np
-import h5py
-from tqdm import tqdm
-from sklearn.utils.parallel import Parallel, delayed
+import pandas as pd
 import scipy.stats as stats
+from sklearn.utils.parallel import Parallel, delayed
+from tqdm import tqdm
 
-from .ms1feature import MS1Feature
-from .scanwindow import ScanWindow
-from .gpfrun import GPFRun
-from .msrun import MSRun
-from ..config import Config
-from ..utils import fraction_explained_variance
-from ..fitpeaks import (
-    fit_gaussian_elution,
-    least_squares_with_l1_bounds,
-)
 from fragment_feature_detection.decomposition import fit_nmf_matrix_custom_init
+
+from ..config import Config, Constants
+from ..fitpeaks import fit_gaussian_elution, least_squares_with_l1_bounds
+from ..utils import fraction_explained_variance
+from .gpfrun import GPFRun
+from .ms1feature import MS1Feature
+from .msrun import MSRun
+from .scanwindow import ScanWindow
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +47,8 @@ def fit_scanwindow(
             sigmas.append(s)
             maes.append(mae)
             keep.append(True)
-        except:
+        except Exception as e:
+            logger.exception(f"Error fitting gaussian to component: {e}")
             mus.append(0)
             sigmas.append(0)
             maes.append(0)
@@ -107,7 +95,14 @@ def fit_nmf_matrix_gpfrun(
     """
 
     def modify_fit_scanwindow(sw: ScanWindow) -> ScanWindow:
-        """ """
+        """Helper function to process a single scan window with NMF and peak fitting.
+
+        Args:
+            sw (ScanWindow): Scan window to process
+
+        Returns:
+            ScanWindow: Processed scan window with NMF decomposition and peak fits
+        """
         if not sw.is_filtered:
             sw.filter_scans()
         fit_nmf_matrix_scanwindow(sw, **config.nmf)
@@ -133,19 +128,153 @@ def fit_nmf_matrix_msrun(
     n_jobs: int = 8,
     config: Config = Config(),
 ) -> None:
-    """ """
+    """Fit NMF decomposition to all GPF runs in an MS run.
+
+    Args:
+        msrun (MSRun): MS run object to process
+        n_jobs (int): Number of parallel jobs to run
+        config (Config): Configuration object containing NMF parameters
+    """
     start_time = time.time()
     logging.info("Begin fitting GPFRuns...")
 
-    for gpf_index in tqdm(msrun._gpf_runs):
+    n_gpfs = len(msrun._gpf_runs)
+
+    for gpf_index in tqdm(msrun._gpf_runs, disable=(not config.tqdm_enabled)):
+        gpf_start_time = time.time()
         gpf = msrun.get_gpf(gpf_index)
-        logging.info(f"Starting to work on GPF index: {gpf_index} -> {gpf._gpf}.")
+        logging.info(
+            f"Starting to work on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf}."
+        )
         fit_nmf_matrix_gpfrun(
             gpf,
             n_jobs=n_jobs,
             config=config,
         )
+        logging.info(
+            f"Finished working on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf} in {time.time() - gpf_start_time}."
+        )
     logging.info(f"Finished fitting GPFRuns in {time.time() - start_time}.")
+
+
+def add_ms1_features_scanwindow(
+    w: ScanWindow,
+    ms1_df: pd.DataFrame,
+    isotope_mu: float = Constants.isotope_mu,
+    config: Config = Config(),
+) -> None:
+    """Add MS1 features to a scan window from a Biosaur2 features DataFrame.
+
+    Args:
+        w (ScanWindow): Scan window to add features to
+        ms1_df (pd.DataFrame): DataFrame containing MS1 features from Biosaur2
+        isotope_mu (float): Mass difference between isotopes
+        config (Config): Configuration object
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sub_ms1_df = ms1_df.loc[
+            (ms1_df["rtStart"] < w.retention_time[-1])
+            & (ms1_df["rtEnd"] > w.retention_time[0])
+        ]
+        sub_ms1_df.loc[:, "mz_isotopes"] = sub_ms1_df.apply(
+            lambda x: [
+                x.mz + (i * isotope_mu / x.charge)
+                for i in range(0, x.nIsotopes)
+                if x.mz + (i * isotope_mu / x.charge)
+                >= getattr(w, "_gpf_low", w._gpf - 1.0)
+                and x.mz + (i * isotope_mu / x.charge)
+                <= getattr(w, "_gpf_high", w._gpf + 1.0)
+            ],
+            axis=1,
+        )
+        sub_ms1_df = sub_ms1_df.loc[sub_ms1_df["mz_isotopes"].map(lambda x: len(x) > 0)]
+
+        ms1_features = []
+
+        for i, r in sub_ms1_df.iterrows():
+            ms1_feature = MS1Feature.from_biosaur2_series_with_ms2(
+                r.copy(),
+                w.retention_time.copy(),
+            )
+            ms1_features.append(ms1_feature)
+
+        w.set_ms1_features(ms1_features)
+
+
+def add_ms1_features_gpfrun(
+    gpfrun: GPFRun,
+    ms1_df: pd.DataFrame,
+    config: Config = Config(),
+    n_jobs: int = 8,
+) -> None:
+    """Add MS1 features to all scan windows in a GPF run in parallel.
+
+    Args:
+        gpfrun (GPFRun): GPF run object to process
+        ms1_df (pd.DataFrame): DataFrame containing MS1 features from Biosaur2
+        config (Config): Configuration object
+        n_jobs (int): Number of parallel jobs to run
+    """
+
+    def modify_add_ms1_scanwindow(w: ScanWindow) -> ScanWindow:
+        """Helper function to add MS1 features to a single scan window.
+
+        Args:
+            w (ScanWindow): Scan window to process
+
+        Returns:
+            ScanWindow: Scan window with added MS1 features
+        """
+        add_ms1_features_scanwindow(w, ms1_df, config=config)
+        return w
+
+    with Parallel(n_jobs=n_jobs, pre_dispatch="2*n_jobs") as parallel:
+        modified_scan_windows = parallel(
+            delayed(modify_add_ms1_scanwindow)(sw)
+            for sw in tqdm(
+                gpfrun.scan_windows,
+                disable=(not config.tqdm_enabled),
+                total=len(gpfrun.scan_windows),
+            )
+        )
+
+    gpfrun.scan_windows = modified_scan_windows
+
+
+def add_ms1_features_msrun(
+    msrun: MSRun,
+    ms1_df: pd.DataFrame,
+    config: Config = Config(),
+    n_jobs: int = 8,
+) -> None:
+    """Add MS1 features to all GPF runs in an MS run.
+
+    Args:
+        msrun (MSRun): MS run object to process
+        ms1_df (pd.DataFrame): DataFrame containing MS1 features from Biosaur2
+        config (Config): Configuration object
+        n_jobs (int): Number of parallel jobs to run
+    """
+    start_time = time.time()
+    logging.info("Begin adding MS1 features GPFRuns...")
+
+    n_gpfs = len(msrun._gpf_runs)
+
+    for gpf_index in tqdm(msrun._gpf_runs, disable=(not config.tqdm_enabled)):
+        gpf_start_time = time.time()
+        gpf = msrun.get_gpf(gpf_index)
+        logging.info(
+            f"Starting to work on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf}."
+        )
+        add_ms1_features_gpfrun(gpf, ms1_df, config=config, n_jobs=n_jobs)
+        logging.info(
+            f"Finished working on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf} in {time.time() - gpf_start_time}."
+        )
+
+    logging.info(
+        f"Finished adding MS1 Features for GPFRuns in {time.time() - start_time}."
+    )
 
 
 def fit_ms1_ms2_feature_matching_scanwindow(
@@ -193,11 +322,19 @@ def fit_ms1_ms2_feature_matching_scanwindow(
         idx_high = min(np.searchsorted(rt, w_high, side="right"), rt.shape[0] - 1)
 
         sub_ms2 = w.w[idx_low:idx_high, i].flatten()
-        sub_ms2 = sub_ms2 / np.linalg.norm(sub_ms2)
+        ms2_norm = np.linalg.norm(sub_ms2)
+        if np.isclose(ms2_norm, 0.0):
+            logger.warning(
+                f"Component {i} of scanwindow: {w.component_names[i]}:{w.scan_index[0]}-{w.scan_index[-1]} has zero norm."
+            )
+            ms1_ms2_feature_match[i, :] = 0.0
+            continue
+        sub_ms2 = sub_ms2 / ms2_norm
+
         sub_ms1_keep = ms1_elution_matrix[idx_low:idx_high]
         ms1_keep_mask = sub_ms1_keep.sum(axis=0) > 0
         sub_ms1_keep = sub_ms1_keep[:, ms1_keep_mask] / np.linalg.norm(
-            sub_ms1_keep[:, ms1_keep_mask], axis=0
+            ms1_elution_matrix[:, ms1_keep_mask], axis=0
         )
 
         if sub_ms1_keep.size == 0:
@@ -213,9 +350,9 @@ def fit_ms1_ms2_feature_matching_scanwindow(
         global_ms2_explained_variance[i] = fraction_explained_variance(
             sub_ms1_keep, sub_ms2, coef
         )
-        individual_ms2_explained_variance[i, keep_coef] = np.array(
+        individual_ms2_explained_variance[i, ms1_keep_mask] = np.array(
             [
-                fraction_explained_variance(sub_ms1_keep[c], sub_ms2, coef[c])
+                fraction_explained_variance(sub_ms1_keep[:, c], sub_ms2, coef[c])
                 for c in range(coef.shape[0])
             ]
         )
@@ -241,8 +378,15 @@ def fit_ms1_ms2_feature_matching_gpfrun(
     """
 
     def modify_match_scanwindow(sw: ScanWindow) -> ScanWindow:
-        """ """
-        fit_ms1_ms2_feature_matching_scanwindow(sw, **config.feature_matchinga)
+        """Helper function to match MS1 and MS2 features in a single scan window.
+
+        Args:
+            sw (ScanWindow): Scan window to process
+
+        Returns:
+            ScanWindow: Scan window with matched MS1 and MS2 features
+        """
+        fit_ms1_ms2_feature_matching_scanwindow(sw, **config.feature_matching)
         return sw
 
     with Parallel(n_jobs=n_jobs, pre_dispatch="2*n_jobs") as parallel:
@@ -256,3 +400,261 @@ def fit_ms1_ms2_feature_matching_gpfrun(
         )
 
     gpfrun.scan_windows = fit_scan_windows
+
+
+def fit_ms1_ms2_feature_matching_msrun(
+    msrun: MSRun,
+    n_jobs: int = 8,
+    config: Config = Config(),
+) -> None:
+    """Match MS1 features to MS2 components across all GPF runs in an MS run.
+
+    Args:
+        msrun (MSRun): MS run object to process
+        n_jobs (int): Number of parallel jobs to run
+        config (Config): Configuration object containing feature matching parameters
+    """
+    start_time = time.time()
+    logging.info("Begin matching MS1/MS2 features GPFRuns...")
+
+    n_gpfs = len(msrun._gpf_runs)
+
+    for gpf_index in tqdm(msrun._gpf_runs, disable=(not config.tqdm_enabled)):
+        gpf_start_time = time.time()
+        gpf = msrun.get_gpf(gpf_index)
+        logging.info(
+            f"Starting to work on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf}."
+        )
+        fit_ms1_ms2_feature_matching_gpfrun(
+            gpf,
+            n_jobs=n_jobs,
+            config=config,
+        )
+        logging.info(
+            f"Finished working on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf} in {time.time() - gpf_start_time}."
+        )
+
+    logging.info(f"Finished matching GPFRuns in {time.time() - start_time}.")
+
+
+def dump_features_to_df_scanwindow(
+    sw: ScanWindow,
+    gpfrun: GPFRun,
+    config: Config = Config(),
+) -> pd.DataFrame:
+    """Convert scan window features to a pandas DataFrame.
+
+    Args:
+        sw (ScanWindow): Scan window containing MS1 and MS2 features
+        gpfrun (GPFRun): Parent GPF run containing the scan window
+        config (Config): Configuration object with feature output parameters
+
+    Returns:
+        pd.DataFrame: DataFrame containing MS2 component information and optional MS1 matches
+        with columns for component properties, peak information, and matching coefficients
+    """
+    if config.feature_matching.match_ms1 and not sw._is_ms1_features_fit:
+        raise AttributeError("MS1 features have not been matched to MS2 components")
+
+    matches = []
+
+    component_means, component_sigmas = sw.component_fit_parameters
+    scan_number = sw.scan_number
+    scan_index = sw.scan_index
+    retention_time = sw.retention_time
+    reverse_max_scaling = sw.reverse_transform_maxscale_scans()
+    mz = sw.mz
+    ms1_features = sw.ms1_features
+
+    for i in range(sw.component_names.size):
+        # Find index of closest scan to the apex.
+        apex_scan_idx = np.abs(retention_time - component_means[i]).argmin()
+        component_weight = sw.h[i]
+        component_weight_rescaled = component_weight * reverse_max_scaling
+
+        # Pull the observed ms2 spectra from the gpfrun object.
+        sub_m_long = gpfrun.m_long[gpfrun.m_long[:, 0] == scan_number[apex_scan_idx]]
+
+        # Find the top N peaks
+        top_reweighted_peak_indices = np.argsort(component_weight_rescaled)[
+            -1 * config.feature_output.top_n_rescaled_peaks :
+        ][::-1]
+        top_weight_indices = np.argsort(component_weight)[
+            -1 * config.feature_output.top_n_rescaled_peaks :
+        ][::-1]
+
+        top_reweight_intensity = component_weight_rescaled[top_reweighted_peak_indices]
+        top_reweight_mz = mz[top_reweighted_peak_indices]
+        top_weight_intensity = component_weight[top_weight_indices]
+        top_weight_mz = mz[top_weight_indices]
+
+        # Build series based on ms2 feature.
+        feature = {
+            "ms2_component": sw.component_names[i],
+            "ms2_component_rt": component_means[i],
+            "ms2_component_sigma": component_sigmas[i],
+            "ms2_gpf_center": sw._gpf,
+            "ms2_gpf_low": sw._gpf_low,
+            "ms2_gpf_high": sw._gpf_high,
+            "ms2_apex_scan_index": scan_index[apex_scan_idx],
+            "ms2_apex_scan_number": scan_number[apex_scan_idx],
+            "ms2_apex_scan_rt": retention_time[apex_scan_idx],
+            "ms2_component_weight_mz": top_weight_mz.copy(),
+            "ms2_component_weight_intensity": top_weight_intensity.copy(),
+            "ms2_component_reweight_mz": top_reweight_mz.copy(),
+            "ms2_component_reweight_intensity": top_reweight_intensity.copy(),
+            "ms2_mz_array": sub_m_long[:, 2].copy(),
+            "ms2_intensity_array": sub_m_long[:, 3].copy(),
+        }
+
+        # Matching to discrete ms1 features.
+        if config.feature_matching.match_ms1:
+            # Add ms1 matching features, then explode.
+            matching_coefficients = sw._component_ms1_coef_matrix[i]
+            sorted_coef_idx = np.argsort(matching_coefficients)[::-1]
+            if sorted_coef_idx.size < config.feature_output.top_n_ms1_matches:
+                threshold = 0.0
+            else:
+                threshold = matching_coefficients[
+                    sorted_coef_idx[config.feature_output.top_n_ms1_matches - 1]
+                ]
+            keep_coef_idx = np.where(
+                (matching_coefficients >= threshold)
+                & (
+                    matching_coefficients
+                    >= config.feature_output.matching_coefficient_threshold
+                )
+            )[0]
+
+            ms1_feature_masses = np.array(
+                [ms1_features[c]._calibrated_mass for c in keep_coef_idx]
+            )
+            ms1_feature_charges = np.array(
+                [ms1_features[c]._charge for c in keep_coef_idx]
+            )
+            ms1_feature_mzes = np.array([ms1_features[c]._mz for c in keep_coef_idx])
+            ms1_feature_apex_rt = np.array(
+                [ms1_features[c]._retention_time_apex for c in keep_coef_idx]
+            )
+            ms1_feature_apex_intensity = np.array(
+                [ms1_features[c]._intensity_apex for c in keep_coef_idx]
+            )
+            ms1_feature_sum_intensity = np.array(
+                [ms1_features[c]._intensity_sum for c in keep_coef_idx]
+            )
+            ms1_feature_id = np.array([ms1_features[c]._id for c in keep_coef_idx])
+
+            ms1_feature = {
+                "ms1_matching_coef": matching_coefficients[keep_coef_idx].copy(),
+                "ms1_global_explained_variance": sw._component_ms1_global_exp_var[
+                    i
+                ].copy(),
+                "ms1_individual_explained_variance": sw._component_ms1_individual_exp_var[
+                    i, keep_coef_idx
+                ].copy(),
+                "ms1_mass": ms1_feature_masses.copy(),
+                "ms1_charge": ms1_feature_charges.copy(),
+                "ms1_mz": ms1_feature_mzes.copy(),
+                "ms1_apex_rt": ms1_feature_apex_rt.copy(),
+                "ms1_apex_intensity": ms1_feature_apex_intensity.copy(),
+                "ms1_sum_intensity": ms1_feature_sum_intensity.copy(),
+                "ms1_id": ms1_feature_id.copy(),
+            }
+            feature.update(ms1_feature)
+
+        matches.append(feature)
+
+    if len(matches) == 0:
+        return pd.DataFrame()
+
+    if config.feature_matching.match_ms1:
+        return (
+            pd.DataFrame(matches)
+            .explode(
+                [
+                    "ms1_matching_coef",
+                    "ms1_individual_explained_variance",
+                    "ms1_mass",
+                    "ms1_charge",
+                    "ms1_mz",
+                    "ms1_apex_rt",
+                    "ms1_apex_intensity",
+                    "ms1_sum_intensity",
+                    "ms1_id",
+                ]
+            )
+            .reset_index(drop=True)
+        )
+    return pd.DataFrame(matches)
+
+
+def dump_features_to_df_gpfrun(
+    gpfrun: GPFRun,
+    config: Config = Config(),
+) -> pd.DataFrame:
+    """Convert all features from a GPF run to a pandas DataFrame.
+
+    Args:
+        gpfrun (GPFRun): GPF run containing scan windows to convert
+        config (Config): Configuration object with feature output parameters
+
+    Returns:
+        pd.DataFrame: Concatenated DataFrame containing features from all scan windows
+        in the GPF run
+    """
+    dfs = []
+
+    for sw in gpfrun.scan_windows:
+        dfs.append(
+            dump_features_to_df_scanwindow(
+                sw,
+                gpfrun,
+                config=config,
+            )
+        )
+
+    return pd.concat(dfs).reset_index(drop=True)
+
+
+def dump_features_to_df_msrun(
+    msrun: MSRun,
+    config: Config = Config(),
+) -> pd.DataFrame:
+    """Convert all features from an MS run to a pandas DataFrame.
+
+    Args:
+        msrun (MSRun): MS run containing GPF runs to convert
+        config (Config): Configuration object with feature output parameters
+
+    Returns:
+        pd.DataFrame: Concatenated DataFrame containing features from all GPF runs
+        in the MS run
+    """
+    start_time = time.time()
+    logging.info("Begin dumping GPFRuns features to dataframe...")
+
+    dfs = []
+
+    n_gpfs = len(msrun._gpf_runs)
+
+    for gpf_index in tqdm(msrun._gpf_runs, disable=(not config.tqdm_enabled)):
+
+        gpf_start_time = time.time()
+        gpf = msrun.get_gpf(gpf_index)
+        logging.info(
+            f"Starting to work on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf}."
+        )
+
+        dfs.append(
+            dump_features_to_df_gpfrun(
+                gpf,
+                config=config,
+            )
+        )
+        logging.info(
+            f"Finished working on GPF index: {gpf_index}/{n_gpfs} -> {gpf._gpf} in {time.time() - gpf_start_time}."
+        )
+
+    logging.info(f"Finished dumping GPFRuns in {time.time() - start_time}.")
+
+    return pd.concat(dfs).reset_index(drop=True)

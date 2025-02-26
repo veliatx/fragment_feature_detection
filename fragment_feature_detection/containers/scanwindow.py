@@ -1,26 +1,13 @@
-from typing import (
-    Union,
-    Optional,
-    Tuple,
-    Type,
-    Literal,
-    List,
-    Dict,
-    Any,
-)
-from pathlib import Path
-import logging
 import copy
+import logging
 import warnings
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-import numpy as np
-import pandas as pd
 import h5py
-from tqdm import tqdm
-from sklearn.decomposition import NMF
-
-import scipy.sparse as sps
+import numpy as np
 import scipy.ndimage as ndi
+import scipy.sparse as sps
+from sklearn.decomposition import NMF
 
 from .ms1feature import MS1Feature
 
@@ -124,7 +111,11 @@ class ScanWindow:
         self._m_max_bin_indices = None
 
     def __copy__(self):
-        """ """
+        """Create a deep copy of the ScanWindow instance.
+
+        Returns:
+            ScanWindow: A new instance with deep copies of all attributes.
+        """
         cls = self.__class__
         new_instance = cls.__new__(cls)
         for k, v in self.__dict__.items():
@@ -133,61 +124,128 @@ class ScanWindow:
 
     @property
     def m(self) -> np.ndarray:
-        """ """
+        """Get the intensity matrix as a dense numpy array.
+
+        Returns:
+            np.ndarray: Dense intensity matrix.
+        """
         if not isinstance(self._m, np.ndarray):
             return self._m.toarray()
         return self._m
 
     @property
     def retention_time(self) -> np.ndarray:
-        """ """
+        """Get the retention time array.
+
+        Returns:
+            np.ndarray: Array of retention times.
+        """
         return self._retention_time
 
     @property
     def scan_number(self) -> np.ndarray:
-        """ """
+        """Get the scan number array.
+
+        Returns:
+            np.ndarray: Array of scan numbers.
+        """
         return self._scan_number
 
     @property
     def scan_index(self) -> np.ndarray:
-        """ """
+        """Get the scan index array.
+
+        Returns:
+            np.ndarray: Array of scan indices.
+        """
         return self._scan_index
 
     @property
+    def mz(self) -> np.ndarray:
+        """Get the m/z for the m/z bins.
+
+        Returns:
+            np.ndarray: Array of m/z bins.
+        """
+        return self._mz
+
+    @property
     def mz_bin_indices(self) -> np.ndarray:
-        """ """
+        """Get the m/z bin indices array.
+
+        Returns:
+            np.ndarray: Array of m/z bin indices.
+        """
         return self._mz_bin_indices
 
     @property
     def w(self) -> np.ndarray:
-        """ """
+        """Get the NMF basis matrix for kept components.
+
+        Returns:
+            np.ndarray: NMF basis matrix
+
+        Raises:
+            AttributeError: If NMF decomposition has not been performed
+        """
         if not getattr(self, "_is_fit", False):
             raise AttributeError("ScanWindow not fit.")
         return self._w[:, self.component_indices]
 
     @property
     def h(self) -> np.ndarray:
-        """ """
+        """Get the NMF coefficient matrix for kept components.
+
+        Returns:
+            np.ndarray: NMF coefficient matrix
+
+        Raises:
+            AttributeError: If NMF decomposition has not been performed
+        """
         if not getattr(self, "_is_fit", False):
             raise AttributeError("ScanWindow not fit.")
         return self._h[self.component_indices, :]
 
     @property
     def component_indices(self) -> np.ndarray:
-        """ """
+        """Get indices of non-zero components that are kept.
+
+        Returns:
+            np.ndarray: Array of component indices
+
+        Raises:
+            AttributeError: If NMF decomposition has not been performed
+        """
         if not getattr(self, "_is_fit", False):
             raise AttributeError("ScanWindow not fit.")
         return np.where(self._non_zero_components & self._component_keep)[0]
 
     @property
     def component_maes(self) -> np.ndarray:
+        """Get mean absolute errors of peak fits for kept components.
+
+        Returns:
+            np.ndarray: Array of mean absolute errors
+
+        Raises:
+            AttributeError: If peak fitting has not been performed
+        """
         if not getattr(self, "_is_component_fit", False):
             raise AttributeError("Need to fit gaussians.")
         return self._component_maes[self.component_indices]
 
     @property
     def component_fit_parameters(self) -> Tuple[np.ndarray, np.ndarray]:
-        """ """
+        """Get the fitted peak parameters (means and sigmas) for kept components.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Tuple containing:
+                - Array of peak means/centers
+                - Array of peak standard deviations/widths
+
+        Raises:
+            AttributeError: If peak fitting has not been performed
+        """
         if not getattr(self, "_is_component_fit", False):
             raise AttributeError("Need to fit gaussians.")
         return (
@@ -197,36 +255,79 @@ class ScanWindow:
 
     @property
     def component_names(self) -> np.ndarray:
-        """ """
+        """Get the names of kept components.
+
+        Returns:
+            np.ndarray: Array of component names
+
+        Raises:
+            AttributeError: If peak fitting has not been performed
+        """
         if not getattr(self, "_is_component_fit", False):
             raise AttributeError("Need to fit gaussians.")
         return self._component_names[self.component_indices]
 
     @property
     def is_filtered(self) -> bool:
-        """ """
+        """Check if scan data has been filtered.
+
+        Returns:
+            bool: True if filtering has been applied, False otherwise
+        """
         return self._is_filtered
 
     @property
     def is_fit(self) -> bool:
-        """ """
+        """Check if NMF decomposition has been performed.
+
+        Returns:
+            bool: True if NMF has been fit, False otherwise
+        """
         return self._is_fit
 
     @property
     def is_component_fit(self) -> bool:
-        """ """
+        """Check if peak fitting has been performed on components.
+
+        Returns:
+            bool: True if components have been fit, False otherwise
+        """
         return self._is_component_fit
 
     @property
     def ms1_features(self) -> List["MS1Feature"]:
-        """ """
+        """Get the list of associated MS1 features.
+
+        Returns:
+            List[MS1Feature]: List of MS1 features
+        """
         return self._ms1_features
 
     @property
     def ms1_features_information(self) -> Tuple[np.ndarray, np.ndarray]:
-        """ """
-        if not getattr(self, "_ms1_features", False):
+        """Get interpolated intensities and IDs for all MS1 features.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Tuple containing:
+                - 2D array of interpolated intensities (scans × features)
+                - Array of feature IDs
+
+        Raises:
+            AttributeError: If no MS1 features have been added
+        """
+        if self._ms1_features is None:
             raise AttributeError("No ms1 features added to this scanwindow.")
+
+        if len(self._ms1_features) == 0:
+            return (
+                np.empty(
+                    (
+                        self.m.shape[0],
+                        0,
+                    )
+                ).T,
+                np.array([]),
+            )
 
         ms1_elution = np.vstack(
             [f._interpolated_intensity for f in self._ms1_features]
@@ -238,17 +339,39 @@ class ScanWindow:
 
     @property
     def is_ms1_features_fit(self) -> bool:
-        """ """
+        """Check if MS1 features have been matched to MS2 components.
+
+        Returns:
+            bool: True if MS1-MS2 matching has been performed, False otherwise
+        """
         return self._is_ms1_features_fit
 
     def mask_component(self, component_index) -> None:
-        """ """
+        """Mask/exclude a component from further analysis.
+
+        Args:
+            component_index (int): Index of component to mask
+
+        Raises:
+            AttributeError: If peak fitting has not been performed
+        """
         if not getattr(self, "_is_component_fit", False):
             raise AttributeError
         self._component_keep[component_index] = False
 
     def filter_scans(self) -> None:
-        """ """
+        """Apply all configured filtering operations to scan data.
+
+        This includes:
+        - Removing zero m/z values
+        - Clipping constant signals
+        - Percentile filtering (if enabled)
+        - Log transformation (if enabled)
+        - Max scaling (if enabled)
+        - Denoising (if enabled)
+        - Edge scan filtering (if enabled)
+        - Downcasting data types (if enabled)
+        """
         self.filter_zero_mz()
         self.filter_clip_constant()
         if self._percentile_filter_scans:
@@ -279,7 +402,11 @@ class ScanWindow:
         self._is_filtered = True
 
     def filter_mz_axis(self, mask: np.ndarray) -> None:
-        """ """
+        """Filter the m/z axis using a boolean mask.
+
+        Args:
+            mask (np.ndarray): Boolean mask indicating which m/z values to keep.
+        """
         self._mz_masked[
             np.searchsorted(
                 self._mz_bin_indices_unfilter,
@@ -291,7 +418,9 @@ class ScanWindow:
         self._m = self._m[:, mask]
 
     def filter_edge_scans(self) -> None:
-        """ """
+        """Filter out edge scans by setting their intensities to zero.
+        Uses _filter_edge_nscans to determine number of scans to filter.
+        """
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             self._m[: self._filter_edge_nscans, :] = 0.0
@@ -299,7 +428,7 @@ class ScanWindow:
         self.filter_zero_mz()
 
     def filter_zero_mz(self) -> None:
-        """ """
+        """Remove m/z values that have zero intensity across all scans."""
         mask = (self._m.sum(axis=0) > 0.0).flatten()
         if isinstance(mask, np.matrix):
             mask = np.array(mask).flatten()
@@ -311,7 +440,13 @@ class ScanWindow:
         robust_scaling: bool = False,
         robust_scaling_percentile: float = 99.5,
     ) -> None:
-        """ """
+        """Scale intensities by maximum value along specified axis.
+
+        Args:
+            axis (int): Axis along which to find maximum (0=scans, 1=m/z)
+            robust_scaling (bool): Use percentile instead of maximum if True
+            robust_scaling_percentile (float): Percentile to use if robust_scaling is True
+        """
         if not robust_scaling:
             m_m = self._m.max(axis=axis)
         else:
@@ -333,11 +468,11 @@ class ScanWindow:
             self._m = self._m / m_m
 
     def transform_log_scans(self) -> None:
-        """ """
+        """Apply log1p transform to scan intensities."""
         self._m = np.log1p(self._m)
 
     def filter_percentile_scans(self) -> None:
-        """ """
+        """Filter out low intensity values below specified percentile threshold."""
         if isinstance(self._m, np.ndarray):
             threshold_signal = np.percentile(
                 self._m.flatten()[self._m.flatten() > 0],
@@ -351,7 +486,11 @@ class ScanWindow:
         self.filter_zero_mz()
 
     def filter_clip_constant(self, p: float = 0.3) -> None:
-        """ """
+        """Remove m/z values with constant signal above threshold.
+
+        Args:
+            p (float): Threshold for mean normalized intensity
+        """
         if isinstance(self._m, np.ndarray):
             mask = ~(((self._m / self._m.max(axis=0)).mean(axis=0)) > p)
         else:
@@ -365,7 +504,15 @@ class ScanWindow:
         grey_erosion_size: int = 2,
         grey_closing_size: int = 2,
     ) -> np.ndarray:
-        """ """
+        """Apply operations to denoise scan data.
+
+        Args:
+            grey_erosion_size (int): Size of structuring element for grey erosion
+            grey_closing_size (int): Size of structuring element for grey closing
+
+        Returns:
+            np.ndarray: Denoised scan data
+        """
         is_sparse = False
         if not isinstance(self._m, (np.ndarray, np.matrix)):
             is_sparse = True
@@ -382,7 +529,14 @@ class ScanWindow:
             self._m = sps.csr_matrix(self._m)
 
     def reverse_transform_maxscale_scans(self) -> np.ndarray:
-        """ """
+        """Reverse the max scaling transformation previously applied to scans.
+
+        Returns:
+            np.ndarray: Array of scale factors to reverse the transformation
+
+        Raises:
+            AttributeError: If max scale factors were not previously computed
+        """
         if not isinstance(self._m_max, np.ndarray):
             raise AttributeError
 
@@ -394,7 +548,14 @@ class ScanWindow:
         return self._m_max[scale_indices]
 
     def unfiltered_with_filter(self, scale_if_exists: bool = True) -> np.ndarray:
-        """ """
+        """Get unfiltered data with filtering mask applied.
+
+        Args:
+            scale_if_exists (bool): Whether to apply scaling if max scale factors exist
+
+        Returns:
+            np.ndarray: Filtered unfiltered data matrix
+        """
         m = self._mz_bin_indices_unfilter[:, ~self._mz_masked].toarray()
         if scale_if_exists and self._m_max:
             scale_indices = np.searchsorted(
@@ -404,12 +565,14 @@ class ScanWindow:
             return m / self._m_max[scale_indices]
         return m
 
-    def expand_array(self, array_name: str) -> np.ndarray:
-        """ """
-        pass
-
     def set_nmf_fit(self, w: np.ndarray, h: np.ndarray, model: NMF) -> None:
-        """ """
+        """Set NMF decomposition results.
+
+        Args:
+            w (np.ndarray): NMF basis matrix
+            h (np.ndarray): NMF coefficient matrix
+            model (NMF): Fitted NMF model object containing reconstruction error
+        """
         if self.is_fit:
             self._w = np.hstack([self._w, w.copy()])
             self._h = np.vstack([self._h, h.copy()])
@@ -436,7 +599,14 @@ class ScanWindow:
     def set_peak_fits(
         self, m: np.ndarray, s: np.ndarray, maes: np.ndarray, keep: np.ndarray
     ) -> None:
-        """ """
+        """Set peak fitting results for components.
+
+        Args:
+            m (np.ndarray): Peak means/centers
+            s (np.ndarray): Peak standard deviations/widths
+            maes (np.ndarray): Mean absolute errors of peak fits
+            keep (np.ndarray): Boolean mask of peaks to keep
+        """
         self._component_keep[self._non_zero_components] = keep.copy()
         self._component_means = np.zeros(self._w.shape[1])
         self._component_means[self._non_zero_components] = m.copy()
@@ -471,7 +641,15 @@ class ScanWindow:
     def query_component_info(
         self, value: str, by: Literal["name"] = "name"
     ) -> List[Dict[str, Any]]:
-        """ """
+        """Query information about components.
+
+        Args:
+            value (str): Value to query for
+            by (Literal["name"]): Field to query by, currently only supports "name"
+
+        Returns:
+            List[Dict[str, Any]]: List of dictionaries containing component information
+        """
         matching_components = []
 
         if by == "name":
@@ -485,16 +663,30 @@ class ScanWindow:
 
         return matching_components
 
+    def set_ms1_features(self, ms1_features: List[MS1Feature]) -> None:
+        """Set MS1 features associated with this scan window.
+
+        Args:
+            ms1_features (List[MS1Feature]): List of MS1 features to associate
+        """
+        self._ms1_features = ms1_features
+
     def set_ms1_ms2_feature_matches(
         self,
         coef_matrix: np.ndarray,
         global_variance_explained: np.ndarray,
         individual_variance_explained: np.ndarray,
     ) -> None:
-        """ """
-        self._component_ms1_coef_matrix = coef_matrix
-        self._component_ms1_global_exp_var = global_variance_explained
-        self._component_ms1_individual_exp_var = individual_variance_explained
+        """Set results from matching MS1 features to MS2 components.
+
+        Args:
+            coef_matrix (np.ndarray): Matrix of coefficients relating MS1 to MS2 features
+            global_variance_explained (np.ndarray): Global explained variance for MS1-MS2 matches
+            individual_variance_explained (np.ndarray): Individual explained variance for each match
+        """
+        self._component_ms1_coef_matrix = coef_matrix.copy()
+        self._component_ms1_global_exp_var = global_variance_explained.copy()
+        self._component_ms1_individual_exp_var = individual_variance_explained.copy()
         self._is_ms1_features_fit = True
 
     def dump_h5(
@@ -527,7 +719,15 @@ class ScanWindow:
             close_file = False
 
         def check_arrays_equal(a1: np.ndarray, a2: np.ndarray) -> bool:
-            """ """
+            """Check if two arrays are equal, handling None values.
+
+            Args:
+                a1 (np.ndarray): First array
+                a2 (np.ndarray): Second array
+
+            Returns:
+                bool: True if arrays are equal or both None, False otherwise
+            """
             if a1 is None or a2 is None:
                 return a1 is a2
             return np.array_equal(a1, a2)
@@ -535,7 +735,17 @@ class ScanWindow:
         def save_dataset(
             name: str, data: Union[np.ndarray, sps.csr_matrix, None]
         ) -> None:
-            """ """
+            """Save a dataset to the HDF5 group.
+
+            Args:
+                name (str): Name of the dataset
+                data (Union[np.ndarray, sps.csr_matrix, None]): Data to save
+
+            The function handles:
+            - Sparse and dense arrays
+            - None values (deletes existing dataset)
+            - Updating existing datasets only if changed
+            """
             if data is None:
                 if name in grp:
                     del grp[name]
@@ -657,9 +867,24 @@ class ScanWindow:
         # Need to check and update MS1 features here.
         # Save MS1 features if they exist
         if self._ms1_features is not None:
+            # If the group exists, delete group and re-add.
+            if "ms1_features" in grp:
+                del grp["ms1_features"]
+
             ms1_grp = grp.create_group("ms1_features")
             for i, feature in enumerate(self._ms1_features):
                 feature.dump_h5(ms1_grp, f"feature_{i}")
+
+        if self._is_ms1_features_fit:
+            save_dataset("component_ms1_coef_matrix", self._component_ms1_coef_matrix)
+            save_dataset(
+                "component_ms1_global_exp_var", self._component_ms1_global_exp_var
+            )
+            save_dataset(
+                "component_ms1_individual_exp_var",
+                self._component_ms1_individual_exp_var,
+            )
+            grp.attrs["is_ms1_features_fit"] = self._is_ms1_features_fit
 
         # Save class-level configuration attributes
         grp.attrs["filter_edge_nscans"] = self._filter_edge_nscans
@@ -669,6 +894,9 @@ class ScanWindow:
         grp.attrs["percentile_filter"] = self._percentile_filter
         grp.attrs["log_scans"] = self._log_scans
         grp.attrs["filter_edge_scans"] = self._filter_edge_scans
+        grp.attrs["downcast_h5"] = self._downcast_h5
+        grp.attrs["downcast_scans"] = self._downcast_scans
+        grp.attrs["downcast_bins"] = self._downcast_bins
 
         # Save m_max data if it exists
         if self._m_max is not None:
@@ -776,6 +1004,14 @@ class ScanWindow:
                 feature = MS1Feature.from_h5(ms1_grp, f"feature_{i}")
                 obj._ms1_features.append(feature)
 
+        if "is_ms1_features_fit" in grp.attrs and grp.attrs["is_ms1_features_fit"]:
+            obj._component_ms1_coef_matrix = grp["component_ms1_coef_matrix"][:]
+            obj._component_ms1_global_exp_var = grp["component_ms1_global_exp_var"][:]
+            obj._component_ms1_individual_exp_var = grp[
+                "component_ms1_individual_exp_var"
+            ][:]
+            obj._is_ms1_features_fit = grp.attrs["is_ms1_features_fit"]
+
         # Load class-level configuration attributes
         obj._filter_edge_nscans = grp.attrs["filter_edge_nscans"]
         obj._denoise_scans = grp.attrs["denoise_scans"]
@@ -784,6 +1020,9 @@ class ScanWindow:
         obj._percentile_filter = grp.attrs["percentile_filter"]
         obj._log_scans = grp.attrs["log_scans"]
         obj._filter_edge_scans = grp.attrs["filter_edge_scans"]
+        obj._downcast_h5 = grp.attrs["downcast_h5"]
+        obj._downcast_scans = grp.attrs["downcast_scans"]
+        obj._downcast_bins = grp.attrs["downcast_bins"]
 
         # Load m_max data if it exists
         if "m_max" in grp:
@@ -798,40 +1037,3 @@ class ScanWindow:
             f.close()
 
         return obj
-
-    def add_ms1_features(self, ms1_df: pd.DataFrame, isotope_mu: float = 1.008) -> None:
-        """ """
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            sub_ms1_df = ms1_df.loc[
-                (ms1_df["rtStart"] < self.retention_time[-1])
-                & (ms1_df["rtEnd"] > self.retention_time[0])
-                & (
-                    ms1_df["rtApex"].map(
-                        lambda x: self.retention_time[0] < x < self.retention_time[-1]
-                    )
-                )
-            ]
-            sub_ms1_df.loc[:, "mz_isotopes"] = sub_ms1_df.apply(
-                lambda x: [
-                    x.mz + (i * isotope_mu / x.charge)
-                    for i in range(0, x.nIsotopes)
-                    if x.mz + (i * isotope_mu / x.charge)
-                    >= getattr(self, "_gpf_low", self._gpf - 1.0)
-                    and x.mz + (i * isotope_mu / x.charge)
-                    <= getattr(self, "_gpf_high", self._gpf + 1.0)
-                ],
-                axis=1,
-            )
-            sub_ms1_df = sub_ms1_df.loc[
-                sub_ms1_df["mz_isotopes"].map(lambda x: len(x) > 0)
-            ]
-
-        self._ms1_features = []
-
-        for i, r in sub_ms1_df.iterrows():
-            ms1_feature = MS1Feature.from_biosaur2_series_with_ms2(
-                r.copy(),
-                self.retention_time.copy(),
-            )
-            self._ms1_features.append(ms1_feature)

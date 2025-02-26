@@ -1,30 +1,16 @@
-from typing import (
-    Union,
-    Optional,
-    Tuple,
-    Type,
-    Literal,
-    List,
-    Dict,
-    Any,
-)
-from pathlib import Path
 import logging
-import copy
-import warnings
+from typing import Any, Dict, List, Literal, Optional, Tuple, Type, Union
 
-import numpy as np
 import h5py
-from tqdm import tqdm
-
-from scipy.spatial import distance  # Add this import
+import numpy as np
 import scipy.sparse as sps
+from scipy.spatial import distance
 
-from .scanwindow import ScanWindow
-from ..discretization import MzDiscretize
 from ..config import Config
-from ..utils import pivot_unique_binned_mz_sparse
+from ..discretization import MzDiscretize
 from ..fitpeaks import approximate_overlap_curves
+from ..utils import pivot_unique_binned_mz_sparse
+from .scanwindow import ScanWindow
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +24,7 @@ class GPFRun:
     Attributes:
         _gpf_runs (Dict): Dictionary mapping GPF indices to GPFRun instances.
         _gpf (float): Gas Phase Fractionation value.
+        _m_long (np.ndarray): Unpvitoed intensities.
         _m (scipy.sparse.csr_matrix): Sparse intensity matrix.
         _scan_number (np.ndarray): Array of scan numbers.
         _bin_indices (np.ndarray): Array of bin indices.
@@ -57,6 +44,7 @@ class GPFRun:
     def __init__(
         self,
         gpf: float,
+        m_long: np.ndarray,
         m: sps.csr_matrix,
         scan_number: np.ndarray,
         bin_indices: np.ndarray,
@@ -69,6 +57,7 @@ class GPFRun:
         index: Optional[int] = None,
     ):
         self._gpf = gpf
+        self._m_long = m_long
         self._m = m
         self._scan_number = scan_number
         self._bin_indices = bin_indices
@@ -118,6 +107,11 @@ class GPFRun:
                     self._msrun._h5_file["gpf_runs"][f"gpf_{self._index}"],
                     mode="update",
                 )
+
+    @property
+    def m_long(self) -> np.ndarray:
+        """ """
+        return self._m_long
 
     def update_scan_window_at_index(
         self, scan_window_index: int, scan_window: ScanWindow
@@ -344,6 +338,9 @@ class GPFRun:
         f.create_dataset("m_indptr", data=self._m.indptr)
         f.attrs["m_shape"] = self._m.shape
 
+        # Save m_long array
+        f.create_dataset("m_long", data=self._m_long)
+
         # Save discretize object
         discretize_grp = f.create_group("discretize")
         self._discretize.dump_h5(discretize_grp)
@@ -419,9 +416,13 @@ class GPFRun:
             shape=f.attrs["m_shape"],
         )
 
+        # Load m_long array
+        m_long = f["m_long"][:]
+
         # Create instance
         obj = cls(
             gpf=f.attrs["gpf"],
+            m_long=m_long,
             m=m,
             scan_number=f["scan_number"][:],
             bin_indices=f["bin_indices"][:],
@@ -490,13 +491,18 @@ class GPFRun:
             sub_m, mz_bin_index=mz_bin_index
         )
 
+        # Deduplicate the discretized values so we can pull ms2 data from specific scans.
+        sub_m_dedup = np.unique(sub_m[:, 1:5], axis=0)
+
         if config.downcast_intensities:
             sub_m_p = sub_m_p.astype(np.float32)
+            sub_m_dedup = sub_m_dedup.astype(np.float32)
 
         retention_times = np.unique(sub_m[:, [1, 2]], axis=0)[:, 1]
 
         return cls(
             gpf,
+            sub_m_dedup,
             sub_m_p,
             scans,
             bin_indices,
