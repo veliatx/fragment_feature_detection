@@ -1,7 +1,6 @@
-from typing import Tuple, Optional, Dict, Any
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-
 import scipy.stats as stats
 from scipy.optimize import curve_fit, minimize
 
@@ -59,7 +58,7 @@ def fit_gaussian_elution(
     t: np.ndarray,
     m: np.ndarray,
     mu_bounds: Optional[Tuple[float, float]] = None,
-    sigma_bounds: Optional[Tuple[float, float]] = [0.1, 10.0],
+    sigma_bounds: Optional[Tuple[float, float]] = (0.1, 10.0),
     clip_width: Optional[int] = None,
     **kwargs: Dict[str, Any],
 ) -> np.ndarray:
@@ -139,8 +138,8 @@ def least_squares_with_l1_bounds(
     Args:
         X (np.ndarray): Feature matrix
         y (np.ndarray): Target vector
-        alpha (float, optional): L1 regularization strength. Defaults to 0.1
-        bounds (Tuple[float, float], optional): (min, max) bounds for coefficients.
+        alpha (float): L1 regularization strength. Defaults to 0.1
+        bounds (Tuple[float, float]): (min, max) bounds for coefficients.
             Defaults to (0.0, 1.0)
 
     Returns:

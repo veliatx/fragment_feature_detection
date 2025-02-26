@@ -7,7 +7,7 @@ name = "fragment_feature_detection"
 version = "0.0.1"
 description = "Decompisiton of ms2 fragment spectra."
 authors = [
-    {name = "Mitch Ledwith", email = "mitch@veliatx.com"}
+    {name = "Mitch Ledwith", email = "mitch.ledwith@gmail.com"}
 ]
 requires-python = ">=3.8"
 classifiers = [
@@ -27,14 +27,40 @@ dependencies = [
     "click==8.1.8",
     "lxml==5.3.0",
     "pyarrow==17.0.0",
-    "black==24.8.0",
     "optuna==4.2.0",
+]
+[project.optional-dependencies]
+dev = [
+    "black==24.8.0",
+    "flake8==7.0.0",
+    "mypy==1.9.0",
+    "isort==5.13.2",
+    "pre-commit==3.6.2",
+    "Flake8-pyproject==1.2.3",
 ]
 [project.scripts]
 ffd = "fragment_feature_detection.cli:main"
 
-
 [tool.setuptools]
 packages = ["fragment_feature_detection", "fragment_feature_detection.containers"]
 
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
 
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E501", "E203", "W503"]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist"
+]
+count = true
