@@ -1,26 +1,13 @@
-from typing import (
-    Union,
-    Optional,
-    Tuple,
-    Type,
-    Literal,
-    List,
-    Dict,
-    Any,
-)
-from pathlib import Path
-import logging
 import copy
+import logging
 import warnings
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-import numpy as np
-import pandas as pd
 import h5py
-from tqdm import tqdm
-from sklearn.decomposition import NMF
-
-import scipy.sparse as sps
+import numpy as np
 import scipy.ndimage as ndi
+import scipy.sparse as sps
+from sklearn.decomposition import NMF
 
 from .ms1feature import MS1Feature
 
@@ -174,6 +161,15 @@ class ScanWindow:
         return self._scan_index
 
     @property
+    def mz(self) -> np.ndarray:
+        """Get the m/z for the m/z bins.
+
+        Returns:
+            np.ndarray: Array of m/z bins.
+        """
+        return self._mz
+
+    @property
     def mz_bin_indices(self) -> np.ndarray:
         """Get the m/z bin indices array.
 
@@ -185,10 +181,10 @@ class ScanWindow:
     @property
     def w(self) -> np.ndarray:
         """Get the NMF basis matrix for kept components.
-        
+
         Returns:
             np.ndarray: NMF basis matrix
-            
+
         Raises:
             AttributeError: If NMF decomposition has not been performed
         """
@@ -199,10 +195,10 @@ class ScanWindow:
     @property
     def h(self) -> np.ndarray:
         """Get the NMF coefficient matrix for kept components.
-        
+
         Returns:
             np.ndarray: NMF coefficient matrix
-            
+
         Raises:
             AttributeError: If NMF decomposition has not been performed
         """
@@ -213,10 +209,10 @@ class ScanWindow:
     @property
     def component_indices(self) -> np.ndarray:
         """Get indices of non-zero components that are kept.
-        
+
         Returns:
             np.ndarray: Array of component indices
-            
+
         Raises:
             AttributeError: If NMF decomposition has not been performed
         """
@@ -227,10 +223,10 @@ class ScanWindow:
     @property
     def component_maes(self) -> np.ndarray:
         """Get mean absolute errors of peak fits for kept components.
-        
+
         Returns:
             np.ndarray: Array of mean absolute errors
-            
+
         Raises:
             AttributeError: If peak fitting has not been performed
         """
@@ -241,12 +237,12 @@ class ScanWindow:
     @property
     def component_fit_parameters(self) -> Tuple[np.ndarray, np.ndarray]:
         """Get the fitted peak parameters (means and sigmas) for kept components.
-        
+
         Returns:
             Tuple[np.ndarray, np.ndarray]: Tuple containing:
                 - Array of peak means/centers
                 - Array of peak standard deviations/widths
-                
+
         Raises:
             AttributeError: If peak fitting has not been performed
         """
@@ -260,10 +256,10 @@ class ScanWindow:
     @property
     def component_names(self) -> np.ndarray:
         """Get the names of kept components.
-        
+
         Returns:
             np.ndarray: Array of component names
-            
+
         Raises:
             AttributeError: If peak fitting has not been performed
         """
@@ -274,7 +270,7 @@ class ScanWindow:
     @property
     def is_filtered(self) -> bool:
         """Check if scan data has been filtered.
-        
+
         Returns:
             bool: True if filtering has been applied, False otherwise
         """
@@ -283,7 +279,7 @@ class ScanWindow:
     @property
     def is_fit(self) -> bool:
         """Check if NMF decomposition has been performed.
-        
+
         Returns:
             bool: True if NMF has been fit, False otherwise
         """
@@ -292,7 +288,7 @@ class ScanWindow:
     @property
     def is_component_fit(self) -> bool:
         """Check if peak fitting has been performed on components.
-        
+
         Returns:
             bool: True if components have been fit, False otherwise
         """
@@ -301,7 +297,7 @@ class ScanWindow:
     @property
     def ms1_features(self) -> List["MS1Feature"]:
         """Get the list of associated MS1 features.
-        
+
         Returns:
             List[MS1Feature]: List of MS1 features
         """
@@ -310,21 +306,29 @@ class ScanWindow:
     @property
     def ms1_features_information(self) -> Tuple[np.ndarray, np.ndarray]:
         """Get interpolated intensities and IDs for all MS1 features.
-        
+
         Returns:
             Tuple[np.ndarray, np.ndarray]: Tuple containing:
                 - 2D array of interpolated intensities (scans × features)
                 - Array of feature IDs
-                
+
         Raises:
             AttributeError: If no MS1 features have been added
         """
         if self._ms1_features is None:
             raise AttributeError("No ms1 features added to this scanwindow.")
-        
+
         if len(self._ms1_features) == 0:
-            return (np.empty((self.m.shape[0], 0,)).T, np.array([]))
-        
+            return (
+                np.empty(
+                    (
+                        self.m.shape[0],
+                        0,
+                    )
+                ).T,
+                np.array([]),
+            )
+
         ms1_elution = np.vstack(
             [f._interpolated_intensity for f in self._ms1_features]
         ).T
@@ -336,7 +340,7 @@ class ScanWindow:
     @property
     def is_ms1_features_fit(self) -> bool:
         """Check if MS1 features have been matched to MS2 components.
-        
+
         Returns:
             bool: True if MS1-MS2 matching has been performed, False otherwise
         """
@@ -344,10 +348,10 @@ class ScanWindow:
 
     def mask_component(self, component_index) -> None:
         """Mask/exclude a component from further analysis.
-        
+
         Args:
             component_index (int): Index of component to mask
-            
+
         Raises:
             AttributeError: If peak fitting has not been performed
         """
@@ -357,12 +361,12 @@ class ScanWindow:
 
     def filter_scans(self) -> None:
         """Apply all configured filtering operations to scan data.
-        
+
         This includes:
         - Removing zero m/z values
         - Clipping constant signals
         - Percentile filtering (if enabled)
-        - Log transformation (if enabled) 
+        - Log transformation (if enabled)
         - Max scaling (if enabled)
         - Denoising (if enabled)
         - Edge scan filtering (if enabled)
@@ -501,11 +505,11 @@ class ScanWindow:
         grey_closing_size: int = 2,
     ) -> np.ndarray:
         """Apply operations to denoise scan data.
-        
+
         Args:
             grey_erosion_size (int): Size of structuring element for grey erosion
             grey_closing_size (int): Size of structuring element for grey closing
-            
+
         Returns:
             np.ndarray: Denoised scan data
         """
@@ -526,10 +530,10 @@ class ScanWindow:
 
     def reverse_transform_maxscale_scans(self) -> np.ndarray:
         """Reverse the max scaling transformation previously applied to scans.
-        
+
         Returns:
             np.ndarray: Array of scale factors to reverse the transformation
-            
+
         Raises:
             AttributeError: If max scale factors were not previously computed
         """
@@ -545,10 +549,10 @@ class ScanWindow:
 
     def unfiltered_with_filter(self, scale_if_exists: bool = True) -> np.ndarray:
         """Get unfiltered data with filtering mask applied.
-        
+
         Args:
             scale_if_exists (bool): Whether to apply scaling if max scale factors exist
-            
+
         Returns:
             np.ndarray: Filtered unfiltered data matrix
         """
@@ -563,10 +567,10 @@ class ScanWindow:
 
     def set_nmf_fit(self, w: np.ndarray, h: np.ndarray, model: NMF) -> None:
         """Set NMF decomposition results.
-        
+
         Args:
             w (np.ndarray): NMF basis matrix
-            h (np.ndarray): NMF coefficient matrix  
+            h (np.ndarray): NMF coefficient matrix
             model (NMF): Fitted NMF model object containing reconstruction error
         """
         if self.is_fit:
@@ -596,7 +600,7 @@ class ScanWindow:
         self, m: np.ndarray, s: np.ndarray, maes: np.ndarray, keep: np.ndarray
     ) -> None:
         """Set peak fitting results for components.
-        
+
         Args:
             m (np.ndarray): Peak means/centers
             s (np.ndarray): Peak standard deviations/widths
@@ -638,11 +642,11 @@ class ScanWindow:
         self, value: str, by: Literal["name"] = "name"
     ) -> List[Dict[str, Any]]:
         """Query information about components.
-        
+
         Args:
             value (str): Value to query for
             by (Literal["name"]): Field to query by, currently only supports "name"
-            
+
         Returns:
             List[Dict[str, Any]]: List of dictionaries containing component information
         """
@@ -658,10 +662,10 @@ class ScanWindow:
                 )
 
         return matching_components
-    
+
     def set_ms1_features(self, ms1_features: List[MS1Feature]) -> None:
         """Set MS1 features associated with this scan window.
-        
+
         Args:
             ms1_features (List[MS1Feature]): List of MS1 features to associate
         """
@@ -674,7 +678,7 @@ class ScanWindow:
         individual_variance_explained: np.ndarray,
     ) -> None:
         """Set results from matching MS1 features to MS2 components.
-        
+
         Args:
             coef_matrix (np.ndarray): Matrix of coefficients relating MS1 to MS2 features
             global_variance_explained (np.ndarray): Global explained variance for MS1-MS2 matches
@@ -716,11 +720,11 @@ class ScanWindow:
 
         def check_arrays_equal(a1: np.ndarray, a2: np.ndarray) -> bool:
             """Check if two arrays are equal, handling None values.
-            
+
             Args:
                 a1 (np.ndarray): First array
                 a2 (np.ndarray): Second array
-                
+
             Returns:
                 bool: True if arrays are equal or both None, False otherwise
             """
@@ -732,11 +736,11 @@ class ScanWindow:
             name: str, data: Union[np.ndarray, sps.csr_matrix, None]
         ) -> None:
             """Save a dataset to the HDF5 group.
-            
+
             Args:
                 name (str): Name of the dataset
                 data (Union[np.ndarray, sps.csr_matrix, None]): Data to save
-                
+
             The function handles:
             - Sparse and dense arrays
             - None values (deletes existing dataset)
@@ -873,10 +877,14 @@ class ScanWindow:
 
         if self._is_ms1_features_fit:
             save_dataset("component_ms1_coef_matrix", self._component_ms1_coef_matrix)
-            save_dataset("component_ms1_global_exp_var", self._component_ms1_global_exp_var)
-            save_dataset("component_ms1_individual_exp_var", self._component_ms1_individual_exp_var)
+            save_dataset(
+                "component_ms1_global_exp_var", self._component_ms1_global_exp_var
+            )
+            save_dataset(
+                "component_ms1_individual_exp_var",
+                self._component_ms1_individual_exp_var,
+            )
             grp.attrs["is_ms1_features_fit"] = self._is_ms1_features_fit
-
 
         # Save class-level configuration attributes
         grp.attrs["filter_edge_nscans"] = self._filter_edge_nscans
@@ -889,7 +897,6 @@ class ScanWindow:
         grp.attrs["downcast_h5"] = self._downcast_h5
         grp.attrs["downcast_scans"] = self._downcast_scans
         grp.attrs["downcast_bins"] = self._downcast_bins
-
 
         # Save m_max data if it exists
         if self._m_max is not None:
@@ -1000,7 +1007,9 @@ class ScanWindow:
         if "is_ms1_features_fit" in grp.attrs and grp.attrs["is_ms1_features_fit"]:
             obj._component_ms1_coef_matrix = grp["component_ms1_coef_matrix"][:]
             obj._component_ms1_global_exp_var = grp["component_ms1_global_exp_var"][:]
-            obj._component_ms1_individual_exp_var = grp["component_ms1_individual_exp_var"][:]
+            obj._component_ms1_individual_exp_var = grp[
+                "component_ms1_individual_exp_var"
+            ][:]
             obj._is_ms1_features_fit = grp.attrs["is_ms1_features_fit"]
 
         # Load class-level configuration attributes
@@ -1012,9 +1021,9 @@ class ScanWindow:
         obj._log_scans = grp.attrs["log_scans"]
         obj._filter_edge_scans = grp.attrs["filter_edge_scans"]
         obj._downcast_h5 = grp.attrs["downcast_h5"]
-        obj._downcast_scans = grp.attrs["downcast_scans"] 
+        obj._downcast_scans = grp.attrs["downcast_scans"]
         obj._downcast_bins = grp.attrs["downcast_bins"]
-        
+
         # Load m_max data if it exists
         if "m_max" in grp:
             obj._m_max = grp["m_max"][:]
