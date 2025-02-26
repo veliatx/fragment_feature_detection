@@ -219,6 +219,7 @@ def process_mzml(
             tuning_windows,
             config=config,
             save_run=True,
+            n_jobs=n_jobs,
         )
 
         # Update config with best parameters

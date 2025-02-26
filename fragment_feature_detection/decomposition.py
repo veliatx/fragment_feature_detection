@@ -1235,6 +1235,7 @@ def tune_hyperparameters_randomizedsearchcv(
     ms: List[np.ndarray],
     config: Config = Config(),
     save_run: bool = True,
+    n_jobs: int = 4,
 ) -> None:
     """Tune hyperparameters using RandomizedSearchCV.
 
@@ -1299,7 +1300,7 @@ def tune_hyperparameters_randomizedsearchcv(
         n_iter=config.tuning.n_iter,
         random_state=config.random_seed,
         return_train_score=True,
-        n_jobs=config.tuning.n_jobs,
+        n_jobs=n_jobs,
     )
 
     logger.info("Starting hyperparameter optimization")
@@ -1346,6 +1347,7 @@ def tune_hyperparameters_optunasearchcv(
     ms: List[np.ndarray],
     config: Config = Config(),
     save_run: bool = True,
+    n_jobs: int = 4,
 ) -> Dict[str, Any]:
     """Tune hyperparameters using OptunaSearchCV.
 
@@ -1417,7 +1419,7 @@ def tune_hyperparameters_optunasearchcv(
         n_iter=config.tuning.n_iter,
         random_state=config.random_seed,
         return_train_score=True,
-        n_jobs=config.tuning.n_jobs,
+        n_jobs=n_jobs,
         prune_bad_parameter_spaces=False,
         optimization_parameters=op,
     )
